@@ -65,7 +65,8 @@ parallel, and QA measures the master while it encodes.
 
 ## Limits
 
-Inputs under 10 seconds or silent files are rejected with a message, not a traceback. It cannot listen. QA measures loudness, peaks, contrast, limiter load, distortion, mono, and vocal audibility; it
-cannot judge groove, tone taste, or separation artifacts. A lossless bounce or session stems beat an MP3.
+It cannot listen. QA measures loudness, peaks, contrast, limiter load, distortion, mono, and vocal audibility; it
+cannot judge groove, tone taste, or separation artifacts. A lossless bounce or session stems beat an MP3. Inputs
+under 10 seconds or silent files are rejected with a message.
 
 Development: `.venv/bin/python -m pytest`.

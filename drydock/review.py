@@ -22,6 +22,8 @@ import soundfile as sf
 from drydock import paths
 
 TAGS = ("vocal", "808", "drums", "level", "tone", "width", "dynamics", "artifact", "keep", "other")
+PLACEHOLDER = ("What should change here? e.g. vocal too quiet in the hook, 808 too loud on phones, hats harsh, "
+               "drop hits softer than the bounce")
 ORIGINAL = "original"
 
 
@@ -241,7 +243,7 @@ def make_handler(slug: str) -> type[BaseHTTPRequestHandler]:
                     runs = [r.name for r in list_runs(slug)]
                     if not runs:
                         raise FileNotFoundError(f"no runs for {slug}; run drydock master first")
-                    self._json({"slug": slug, "runs": [ORIGINAL, *runs], "tags": list(TAGS)})
+                    self._json({"slug": slug, "runs": [ORIGINAL, *runs], "tags": list(TAGS), "placeholder": PLACEHOLDER})
                 elif m := re.fullmatch(r"/api/run/([^/]+)", path):
                     self._json({"timeline": timeline(slug, m.group(1)), "peaks": peaks(slug, m.group(1)),
                                 "feedback": load(slug, m.group(1))})

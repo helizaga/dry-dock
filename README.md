@@ -12,14 +12,14 @@ models, spectral ducking). glass-harbor makes mashups and DJ transitions; dry-do
 ## Setup
 
 ```sh
-git clone https://github.com/helizaga/glass-harbor ../glass-harbor   # sibling checkout
 /opt/homebrew/bin/python3.11 -m venv .venv
-.venv/bin/pip install -e '../glass-harbor[ml]'
-.venv/bin/pip install --no-deps -e . && .venv/bin/pip install 'matplotlib>=3.8' 'pytest>=8'
+.venv/bin/pip install -e '.[dev]'
 brew install ffmpeg
 ```
 
-A plain `pip install -e .` also works: it pulls glass-harbor from GitHub at the pinned commit. First use downloads
+This installs glass-harbor from GitHub at the commit pinned in `pyproject.toml`, so work in progress in a
+glass-harbor checkout never changes dry-dock's behavior. To develop both together, swap in the checkout with
+`.venv/bin/pip install --no-deps -e ../glass-harbor` (and move back with `pip install -e .`). First use downloads
 the stem models (a few GB) into `~/.cache/glass-harbor/models`.
 
 ## Use

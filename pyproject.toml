@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 dependencies = [
   # Shared engine: decoding, beat grid + sections, stem models, spectral ducking. Pinned to a pushed commit so the
   # name can never resolve to an unrelated package; for local work install the sibling checkout first (README).
-  "glass-harbor[ml] @ git+https://github.com/helizaga/glass-harbor@a20c34d389c92fb4bc3400c69393e2593d7fdde0",
+  "glass-harbor[ml] @ git+https://github.com/helizaga/glass-harbor@4e283cfd533ce6c9eb85f9205d534a75b518c84b",
   "numpy>=1.26",
   "scipy>=1.11",
   "soundfile>=0.12",

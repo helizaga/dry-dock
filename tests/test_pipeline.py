@@ -184,6 +184,7 @@ def test_review_server_and_feedback_loop(home, monkeypatch, capsys):
         status, _, body = get("/api/session")
         session = json.loads(body)
         assert session["runs"] == [review.ORIGINAL, run] and "808" in session["tags"]
+        assert "808" in session["placeholder"] and "Janice" not in session["placeholder"]
         data = json.loads(get(f"/api/run/{run}")[2])
         assert data["timeline"]["bars"][0]["bar"] == 1 and len(data["timeline"]["clips"]) == 2
         assert len(data["peaks"]) == 2400

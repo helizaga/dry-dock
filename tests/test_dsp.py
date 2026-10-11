@@ -92,7 +92,7 @@ def test_section_rides_restore_contrast_with_cuts_only():
 def test_finalize_hits_target_under_ceiling():
     x = noise(6, 0.1) + tone(50, 6, 0.3)
     mask = np.ones(x.shape[0], bool)
-    y, info = master.finalize(x, -1.0, mask, target_lufs=-12.0)
+    y, info = master.finalize(master.FinalStage(x), -1.0, mask, target_lufs=-12.0)
     assert info["lufs"] == pytest.approx(-12.0, abs=0.3)
     assert dsp.true_peak_db(y) <= -1.0
 
@@ -100,13 +100,14 @@ def test_finalize_hits_target_under_ceiling():
 def test_choose_loudness_respects_budget():
     x = noise(6, 0.1) + tone(35, 6, 0.6)  # sub-heavy: the limiter would ride every cycle if pushed
     mask = np.ones(x.shape[0], bool)
-    gain_db, tried = master.choose_loudness(x, mask, -1.0)
+    stage = master.FinalStage(x)
+    gain_db, tried = master.choose_loudness(stage, mask, -1.0)
     chosen = tried[-1]
     assert chosen["gain_db"] == round(gain_db, 2)
     within = chosen["median_db"] <= master.GR_MEDIAN_MAX_DB and chosen["p995_db"] <= master.GR_P995_MAX_DB
     assert within or len(tried) == len(master.LOUDNESS_CANDIDATES)
     # the final pass at that gain carries exactly the limiter load the search measured
-    _, info = master.finalize(x, -1.0, mask, gain_db=gain_db)
+    _, info = master.finalize(stage, -1.0, mask, gain_db=gain_db)
     assert info["limiter_beat_sections"]["median_db"] == chosen["median_db"]
 
 

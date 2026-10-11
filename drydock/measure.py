@@ -22,14 +22,21 @@ def tone(x: np.ndarray) -> dict[str, float]:
             for k, (lo, hi) in TONE_BANDS.items()}
 
 
+def short_term(x: np.ndarray, window: float = 3.0, hop: float = 1.0) -> np.ndarray:
+    """EBU short-term loudness (K-weighted, ungated mean over ``window`` seconds) every ``hop`` seconds, in one pass."""
+    k = dsp.k_weight(x)
+    size, step = int(window * dsp.SR), int(hop * dsp.SR)
+    starts = np.arange(0, max(1, x.shape[0] - size + 1), step)
+    power = sum(10 ** (dsp.window_db(k[:, ch], starts, size) / 10) for ch in range(k.shape[1]))
+    return -0.691 + 10 * np.log10(power + 1e-15)
+
+
 def third_octaves(x: np.ndarray, *, loud_only: bool = True) -> dict[int, float]:
     """1/3-octave levels relative to 1 kHz, over the loud sections (short-term loudness within 6 LU of the max)."""
     sig = x
     if loud_only and x.shape[0] > 4 * dsp.SR:
-        win = 3 * dsp.SR
-        segs = [(s, dsp.lufs(x[s:s + win])) for s in range(0, x.shape[0] - win, dsp.SR)]
-        top = max(v for _, v in segs)
-        keep = [x[s:s + dsp.SR] for s, v in segs if v > top - 6]
+        st = short_term(x)
+        keep = [x[i * dsp.SR:i * dsp.SR + dsp.SR] for i, v in enumerate(st) if v > st.max() - 6]
         sig = np.concatenate(keep) if keep else x
     f, p = welch(sig.mean(axis=1), dsp.SR, nperseg=16384)
     out = {}
@@ -51,8 +58,9 @@ def stereo(x: np.ndarray) -> dict[str, float]:
 def levels(x: np.ndarray) -> dict[str, Any]:
     lu = dsp.lufs(x)
     tp = dsp.true_peak_db(x)
-    st = np.array([dsp.lufs(x[s:s + 3 * dsp.SR]) for s in range(0, max(1, x.shape[0] - 3 * dsp.SR), dsp.SR)])
-    gated = st[st > lu - 20] if (st > lu - 20).any() else st
+    st = short_term(x)
+    gated = st[(st > lu - 20) & (st > -70)]
+    gated = gated if gated.size else st
     return {"lufs": round(lu, 2), "true_peak_dbtp": round(tp, 2), "plr_db": round(tp - lu, 2),
             "lra_lu": round(float(np.percentile(gated, 95) - np.percentile(gated, 10)), 2),
             "short_term_max": round(float(st.max()), 2),
@@ -97,24 +105,23 @@ def section_spans(grid, sections: list[dict], frames: int) -> list[tuple[int, in
 
 
 def section_loudness(x: np.ndarray, spans: list[tuple[int, int, str]]) -> list[float]:
-    return [round(dsp.lufs(x[a:b]), 2) for a, b, _ in spans]
+    k = dsp.k_weight(x)
+    return [round(dsp.lufs_weighted(k[a:b]), 2) for a, b, _ in spans]
 
 
 def vocal_audibility(vocal: np.ndarray, rest: np.ndarray, grid, *, window: float = 0.4) -> dict[int, float]:
     """Per bar: median of (vocal over everything else, 1-4 kHz) across the windows where the vocal is singing."""
-    vb, rb = dsp.bandpass(vocal.mean(axis=1), 1000, 4000), dsp.bandpass(rest.mean(axis=1), 1000, 4000)
     vm = vocal.mean(axis=1)
     size, hop = int(window * dsp.SR), int(0.1 * dsp.SR)
-
-    def e(sig, a, b):
-        return 10 * np.log10(np.mean(sig[a:b] ** 2) + 1e-15)
-
-    starts = range(0, max(1, vm.size - size), hop * 5)
-    gate = max(-60.0, max(e(vm, s, s + size) for s in starts) - 18)
+    starts = np.arange(0, max(1, vm.size - size), hop)
+    lv = dsp.window_db(vm, starts, size)
+    pv = (dsp.window_db(dsp.bandpass(vm, 1000, 4000), starts, size)
+          - dsp.window_db(dsp.bandpass(rest.mean(axis=1), 1000, 4000), starts, size))
+    singing = lv > max(-60.0, float(lv.max()) - 18)
     out = {}
     for bar in range(1, grid.bar_count + 1):
         a, b = bar_bounds(grid, bar, vm.size)
-        act = [s for s in range(a, b - size, hop) if e(vm, s, s + size) > gate]
-        if act:
-            out[bar] = round(float(np.median([e(vb, s, s + size) - e(rb, s, s + size) for s in act])), 1)
+        sel = singing & (starts >= a) & (starts < b - size)
+        if sel.any():
+            out[bar] = round(float(np.median(pv[sel])), 1)
     return out

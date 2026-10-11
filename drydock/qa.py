@@ -21,9 +21,11 @@ def _rel(values: list[float]) -> list[float]:
     return [v - top for v in values]
 
 
-def report(*, source, master, meta, analysis, spans, stems, processed, settings, why, info, files, grid,
+def report(*, source, master, meta, analysis, spans, stems, processed, settings, why, info, grid,
            vocal_before=None) -> dict[str, Any]:
-    written = deliver.decode_file(Path(files["wav"]))
+    """Everything measurable on the master in memory (runs while the share files encode). ``add_file_checks``
+    finishes the report once the files exist."""
+    written = np.round(np.clip(master, -1.0, 1.0 - 2 ** -23) * 2 ** 23) / 2 ** 23  # exactly what the 24-bit WAV holds
     src_lv, mst_lv = measure.levels(source), measure.levels(written)
     src_st, mst_st = measure.stereo(source), measure.stereo(written)
     sec_src, sec_mst = measure.section_loudness(source, spans), measure.section_loudness(written, spans)
@@ -34,14 +36,6 @@ def report(*, source, master, meta, analysis, spans, stems, processed, settings,
         _check("clipping", int((np.abs(written) >= 0.9999).sum()) == 0,
                f"{int((np.abs(written) >= 0.9999).sum())} samples at full scale", fail=True),
     ]
-    encoded = {}
-    for kind in ("mp3", "m4a"):
-        y = deliver.decode_file(Path(files[kind]))
-        encoded[kind] = {"lufs": round(dsp.lufs(y), 2), "true_peak_dbtp": round(dsp.true_peak_db(y), 2)}
-    worst = max(e["true_peak_dbtp"] for e in encoded.values())
-    trims = {k: v for k, v in (files.get("_share_trim_db") or {}).items() if v}
-    checks.append(_check("peaks after MP3/AAC encoding", worst <= -0.3, f"worst {worst} dBTP"
-                         + (f" (share files turned down {', '.join(f'{k} {v} dB' for k, v in trims.items())})" if trims else "")))
     checks.append(_check("section contrast kept", max(abs(d) for d in drift) <= 1.5,
                          f"largest shift vs the source's section balance {max(drift, key=abs):+.1f} LU"))
     lim = info["final"]["limiter_beat_sections"]
@@ -52,8 +46,6 @@ def report(*, source, master, meta, analysis, spans, stems, processed, settings,
     mono = np.repeat(written.mean(axis=1, keepdims=True), 2, axis=1)
     mono_change = round(dsp.lufs(mono) - mst_lv["lufs"], 2)
     checks.append(_check("mono compatibility", mono_change >= -1.0, f"mono sum {mono_change:+.2f} LU"))
-    size = Path(files["mp4"]).stat().st_size
-    checks.append(_check("phone share file size", size <= deliver.PHONE_LIMIT_BYTES, f"mp4 {size / 2 ** 20:.1f} MiB"))
 
     vocal = None
     if stems is not None and info.get("stems", {}).get("has_vocal"):
@@ -93,15 +85,32 @@ def report(*, source, master, meta, analysis, spans, stems, processed, settings,
     if vocal:
         ears.append("Vocal ride: any phrase that now jumps out, or a breath lifted? Vocal level is a taste call.")
     return {"source": {**meta, **src_lv, "tone": measure.tone(source), "stereo": src_st, "content_cutoff_hz": cutoff},
-            "master": {**mst_lv, "tone": measure.tone(written), "stereo": mst_st, "encoded": encoded},
+            "master": {**mst_lv, "tone": measure.tone(written), "stereo": mst_st},
             "sections": {"names": [s for _, _, s in spans], "source_lufs": sec_src, "master_lufs": sec_mst,
                          "balance_shift_lu": drift},
             "song": {"bpm": analysis.get("bpm"), "key": (analysis.get("key") or {}).get("name"),
                      "bars": grid.bar_count},
             "vocal": vocal, "checks": checks, "source_notes": notes, "needs_ears": ears,
-            "decisions": {"settings": settings.to_dict(), "why": why}, "processing": info,
-            "files": {k: Path(v).name for k, v in files.items() if not k.startswith("_")},
-            "share_trim_db": files.get("_share_trim_db", {})}
+            "decisions": {"settings": settings.to_dict(), "why": why}, "processing": info}
+
+
+def add_file_checks(r: dict[str, Any], files: dict[str, Any]) -> dict[str, Any]:
+    """Checks that need the written files: peaks after lossy encoding and the phone file size."""
+    encoded = {}
+    for kind in ("mp3", "m4a"):
+        y = deliver.decode_file(Path(files[kind]))
+        encoded[kind] = {"lufs": round(dsp.lufs(y), 2), "true_peak_dbtp": round(dsp.true_peak_db(y), 2)}
+    worst = max(e["true_peak_dbtp"] for e in encoded.values())
+    trims = {k: v for k, v in (files.get("_share_trim_db") or {}).items() if v}
+    r["checks"].insert(2, _check("peaks after MP3/AAC encoding", worst <= -0.3, f"worst {worst} dBTP"
+                                 + (f" (share files turned down {', '.join(f'{k} {v} dB' for k, v in trims.items())})"
+                                    if trims else "")))
+    size = Path(files["mp4"]).stat().st_size
+    r["checks"].append(_check("phone share file size", size <= deliver.PHONE_LIMIT_BYTES, f"mp4 {size / 2 ** 20:.1f} MiB"))
+    r["master"]["encoded"] = encoded
+    r["files"] = {k: Path(v).name for k, v in files.items() if not k.startswith("_")}
+    r["share_trim_db"] = files.get("_share_trim_db", {})
+    return r
 
 
 def markdown(r: dict[str, Any], title: str) -> str:

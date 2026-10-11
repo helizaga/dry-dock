@@ -60,6 +60,27 @@ class Settings:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+    def validate(self) -> "Settings":
+        if self.mode not in ("stems", "2track"):
+            raise ValueError(f"mode must be 'stems' or '2track', not {self.mode!r}")
+        if self.target_lufs is not None and not -24 <= self.target_lufs <= -6:
+            raise ValueError("target_lufs must be between -24 and -6")
+        if self.ceiling_db is not None and not -6 <= self.ceiling_db <= 0:
+            raise ValueError("ceiling_db must be between -6 and 0")
+        if self.width is not None and not 0 <= self.width <= 1:
+            raise ValueError("width must be between 0 and 1")
+        for name in ("ride_max_db", "deess_max_db", "drum_clip_db", "hat_cut_db", "kick_duck_db", "duck_other_db",
+                     "duck_drums_db"):
+            value = getattr(self, name)
+            if value is not None and not 0 <= value <= 12:
+                raise ValueError(f"{name} must be between 0 and 12 dB")
+        return self
+
+
+def has_vocal(vocal: np.ndarray, source: np.ndarray) -> bool:
+    """A lead vocal is present when the vocal stem's active level is within 25 dB of the song's (not just bleed)."""
+    return dsp.active_rms_db(vocal) > dsp.active_rms_db(source) - 25
+
 
 def decide(s: Settings, source: np.ndarray, stems: dict[str, np.ndarray] | None,
            vocal_median_db: float | None = None) -> tuple[Settings, dict[str, str]]:
@@ -121,10 +142,11 @@ def process_stems(stems: dict[str, np.ndarray], source: np.ndarray, s: Settings)
     from glass_harbor.spectral import spectral_duck
 
     info: dict[str, Any] = {}
-    v, d, b, o = (stems[k].copy() for k in ("vocals", "drums", "bass", "other"))
-    has_vocal = dsp.active_rms_db(v) > dsp.active_rms_db(source) - 25
+    vocal_present = has_vocal(stems["vocals"], source)
 
-    if has_vocal:
+    def vocal_chain(v: np.ndarray) -> np.ndarray:
+        if not vocal_present:
+            return v
         pre = dsp.active_rms_db(v)
         v = dsp.eq(v, [("hp", 90, 2), ("peak", 500, -1.5, 1.4), ("peak", 3000, s.vocal_presence_db, 0.9),
                        ("highshelf", 11000, 1.0, 0.7)])
@@ -136,27 +158,40 @@ def process_stems(stems: dict[str, np.ndarray], source: np.ndarray, s: Settings)
         on = vgr[vgr > 0.05]
         info["vocal"] = {"deess_p90_db": round(ess, 1), "comp_gr_p50_db": round(float(np.median(on)), 1) if on.size else 0.0,
                          "spike_cut_max_db": round(spike, 1), "lift_db": s.vocal_lift_db}
+        return v
 
-    d = dsp.eq(d, [("peak", 7200, -s.hat_cut_db, 1.4)])
-    d, hat = dsp.dynamic_band(d, 6000, 9500, max_cut_db=2.0 if s.hat_cut_db else 1.0)
-    d = dsp.widen(d, amount=0.2 if s.width else 0.0, above_hz=5000, seed=11)
-    if s.drum_clip_db:
-        d = dsp.soft_clip(d, float(dsp.db(np.percentile(np.abs(d), 99.995))) - s.drum_clip_db, knee=0.8)
-    info["drums"] = {"hat_cut_db": s.hat_cut_db, "hat_dynamic_p90_db": round(hat, 1), "transient_clip_db": s.drum_clip_db}
+    def drum_chain(d: np.ndarray) -> np.ndarray:
+        d = dsp.eq(d, [("peak", 7200, -s.hat_cut_db, 1.4)])
+        d, hat = dsp.dynamic_band(d, 6000, 9500, max_cut_db=2.0 if s.hat_cut_db else 1.0)
+        d = dsp.widen(d, amount=0.2 if s.width else 0.0, above_hz=5000, seed=11)
+        if s.drum_clip_db:
+            d = dsp.soft_clip(d, float(dsp.db(np.percentile(np.abs(d), 99.995))) - s.drum_clip_db, knee=0.8)
+        info["drums"] = {"hat_cut_db": s.hat_cut_db, "hat_dynamic_p90_db": round(hat, 1), "transient_clip_db": s.drum_clip_db}
+        return d
 
-    b = dsp.eq(b, [("hp", 20, 4), ("peak", 30, s.sub_trim_db, 1.5)])
-    if s.octave_up:
-        b = dsp.octave_up(b, below_hz=50, amount=0.4, fundamental_db=-1.5)
-    b = dsp.upper_harmonics(b, amount=0.15) * dsp.gain(s.bass_db)
-    if s.kick_duck_db:
-        b = dsp.kick_duck(b, stems["drums"], depth_db=s.kick_duck_db)
-    info["bass"] = {"octave_up": s.octave_up, "level_db": s.bass_db, "kick_duck_db": s.kick_duck_db,
-                    "sub_trim_db": s.sub_trim_db}
+    def bass_chain(b: np.ndarray) -> np.ndarray:
+        b = dsp.eq(b, [("hp", 20, 4), ("peak", 30, s.sub_trim_db, 1.5)])
+        if s.octave_up:
+            b = dsp.octave_up(b, below_hz=50, amount=0.4, fundamental_db=-1.5)
+        b = dsp.upper_harmonics(b, amount=0.15) * dsp.gain(s.bass_db)
+        if s.kick_duck_db:
+            b = dsp.kick_duck(b, stems["drums"], depth_db=s.kick_duck_db)
+        info["bass"] = {"octave_up": s.octave_up, "level_db": s.bass_db, "kick_duck_db": s.kick_duck_db,
+                        "sub_trim_db": s.sub_trim_db}
+        return b
 
-    o = dsp.widen(o, amount=s.width, above_hz=300, seed=7)
-    info["other"] = {"width": s.width}
+    def other_chain(o: np.ndarray) -> np.ndarray:
+        info["other"] = {"width": s.width}
+        return dsp.widen(o, amount=s.width, above_hz=300, seed=7)
 
-    if has_vocal:
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=4) as pool:  # the four chains are independent (scipy releases the GIL)
+        jobs = [pool.submit(f, stems[k]) for f, k in ((vocal_chain, "vocals"), (drum_chain, "drums"),
+                                                       (bass_chain, "bass"), (other_chain, "other"))]
+        v, d, b, o = (j.result() for j in jobs)
+
+    if vocal_present:
         if s.duck_other_db:
             o = spectral_duck(o.astype(np.float32), v.astype(np.float32), max_db=s.duck_other_db, level_db=0.0).astype(np.float64)
         if s.duck_drums_db:
@@ -169,7 +204,7 @@ def process_stems(stems: dict[str, np.ndarray], source: np.ndarray, s: Settings)
             info["vocal_ride"] = {"share_of_song_boosted": round(float(on.mean()), 2),
                                   "boost_p50_db": round(float(np.median(curve[on])), 1) if on.any() else 0.0,
                                   "boost_max_db": round(float(curve.max()), 1)}
-    info["has_vocal"] = bool(has_vocal)
+    info["has_vocal"] = bool(vocal_present)
     return {"vocals": v, "drums": d, "bass": b, "other": o}, info
 
 

@@ -34,10 +34,11 @@ def aac_encoder() -> str:
     return "aac_at" if re.search(r"\baac_at\b", out) else "aac"
 
 
-def peak_safe(make, dst: Path, max_tp_db: float = -1.0) -> tuple[Path, float]:
+def peak_safe(make, dst: Path, max_tp_db: float = -1.0, start_db: float = 0.0) -> tuple[Path, float]:
     """Encode with ``make(volume_db)``; if the decoded file's true peak exceeds ``max_tp_db`` (lossy encoders overshoot
-    on dense, bright masters), re-encode turned down by the overshoot. Returns (path, gain applied in dB)."""
-    vol = 0.0
+    on dense, bright masters), re-encode turned down by the overshoot. ``start_db``: a predicted trim, so the first
+    encode usually passes. Returns (path, gain applied in dB)."""
+    vol = start_db
     for _ in range(3):
         make(vol)
         tp = dsp.true_peak_db(decode_file(dst))
@@ -73,19 +74,22 @@ def cover(path: Path, title: str, subtitle: str = "") -> Path:
 
 
 def video(wav: Path, dst: Path, title: str, subtitle: str = "", volume_db: float = 0.0) -> Path:
-    """Square video with a title card and a moving waveform: plays inline in Messages, WhatsApp, Instagram DMs."""
+    """Square video with a title card and a moving waveform: plays inline in Messages, WhatsApp, Instagram DMs.
+    One encode, with the video bitrate set from the duration so the file always fits under the phone limit."""
+    seconds = sf.info(str(wav)).duration
+    audio_kbps = 256
+    video_kbps = int(min(1500, max(150, PHONE_LIMIT_BYTES * 8 * 0.92 / max(seconds, 1) / 1000 - audio_kbps)))
     with tempfile.TemporaryDirectory(prefix="drydock-vid-") as tmp:
         card = cover(Path(tmp) / "cover.png", title, subtitle)
-        for crf in (33, 38, 44):
-            subprocess.run([_ffmpeg(), "-v", "error", "-nostdin", "-y", "-loop", "1", "-framerate", "24", "-i", str(card),
-                            "-i", str(wav), "-filter_complex",
-                            "[1:a]showwaves=s=540x220:mode=cline:rate=24:colors=0xF2F2F2:scale=sqrt,colorkey=black:0.1:0.0[w];"
-                            "[0:v][w]overlay=0:195:shortest=1,format=yuv420p[v];"
-                            f"[1:a]volume={volume_db}dB[a]",
-                            "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-preset", "slow", "-crf", str(crf),
-                            "-c:a", aac_encoder(), "-b:a", "256k", "-movflags", "+faststart", "-shortest", str(dst)], check=True)
-            if dst.stat().st_size <= PHONE_LIMIT_BYTES:
-                break
+        subprocess.run([_ffmpeg(), "-v", "error", "-nostdin", "-y", "-loop", "1", "-framerate", "24", "-i", str(card),
+                        "-i", str(wav), "-filter_complex",
+                        "[1:a]showwaves=s=540x220:mode=cline:rate=24:colors=0xF2F2F2:scale=sqrt,colorkey=black:0.1:0.0[w];"
+                        "[0:v][w]overlay=0:195:shortest=1,format=yuv420p[v];"
+                        f"[1:a]volume={volume_db}dB[a]",
+                        "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-preset", "veryfast",
+                        "-b:v", f"{video_kbps}k", "-maxrate", f"{video_kbps}k", "-bufsize", f"{2 * video_kbps}k",
+                        "-c:a", aac_encoder(), "-b:a", f"{audio_kbps}k", "-movflags", "+faststart", "-shortest", str(dst)],
+                       check=True)
     return dst
 
 
@@ -93,7 +97,10 @@ def at_lufs(x: np.ndarray, target: float = -14.0) -> np.ndarray:
     return np.clip(x * dsp.gain(target - dsp.lufs(x)), -1.0, 1.0 - 2 ** -23)
 
 
-def write_all(out: Path, title: str, source: np.ndarray, master: np.ndarray) -> dict[str, str]:
+def write_all(out: Path, title: str, source: np.ndarray, master: np.ndarray, *,
+              encode_overshoot_db: float = 0.0) -> dict[str, str]:
+    """``encode_overshoot_db``: how far an AAC transcode of this master peaks above it (measured by the master
+    stage); the share files start turned down by enough to land at -1 dBTP in one encode."""
     base = f"{title} - master"
     files: dict[str, Path] = {}
     files["wav"] = out / f"{base}.wav"
@@ -102,11 +109,21 @@ def write_all(out: Path, title: str, source: np.ndarray, master: np.ndarray) -> 
     sf.write(files["flac"], np.clip(master, -1.0, 1.0 - 2 ** -23), dsp.SR, format="FLAC", subtype="PCM_24")
     wav, aac = files["wav"], aac_encoder()
     trims: dict[str, float] = {}
-    files["mp3"], trims["mp3"] = peak_safe(lambda v: _encode(wav, out / f"{base}.mp3", ["-af", f"volume={v}dB", "-c:a",
-                                           "libmp3lame", "-b:a", "320k"]), out / f"{base}.mp3")
-    files["m4a"], trims["m4a"] = peak_safe(lambda v: _encode(wav, out / f"{base}.m4a", ["-af", f"volume={v}dB", "-c:a", aac,
-                                           "-b:a", "256k", "-movflags", "+faststart"]), out / f"{base}.m4a")
-    files["mp4"], trims["mp4"] = peak_safe(lambda v: video(wav, out / f"{base}.mp4", title, "master", v), out / f"{base}.mp4")
+    start = round(min(0.0, -1.0 - (dsp.true_peak_db(master) + encode_overshoot_db) - 0.1), 2)
+    mp3, m4a, mp4 = out / f"{base}.mp3", out / f"{base}.m4a", out / f"{base}.mp4"
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=3) as pool:  # three ffmpeg processes at once
+        jobs = {
+            "mp3": pool.submit(peak_safe, lambda v: _encode(wav, mp3, ["-af", f"volume={v}dB", "-c:a", "libmp3lame",
+                                                                       "-b:a", "320k"]), mp3, start_db=start),
+            "m4a": pool.submit(peak_safe, lambda v: _encode(wav, m4a, ["-af", f"volume={v}dB", "-c:a", aac, "-b:a", "256k",
+                                                                       "-movflags", "+faststart"]), m4a, start_db=start),
+            # same AAC encoder and bitrate as the m4a, so the same predicted trim applies
+            "mp4": pool.submit(peak_safe, lambda v: video(wav, mp4, title, "master", v), mp4, start_db=start),
+        }
+        for key, job in jobs.items():
+            files[key], trims[key] = job.result()
     cmp_dir = out / "compare-at-14-lufs"
     cmp_dir.mkdir(exist_ok=True)
     files["compare_source"] = cmp_dir / f"1 {title} - original (-14 LUFS).flac"

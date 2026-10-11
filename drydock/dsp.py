@@ -20,15 +20,80 @@ def gain(d):
     return 10 ** (np.asarray(d, dtype=float) / 20)
 
 
+def k_weight(x: np.ndarray) -> np.ndarray:
+    """BS.1770 K-weighting (pre-filter shelf + RLB high-pass), same coefficients as pyloudnorm."""
+    for f in _meter._filters.values():
+        x = lfilter(f.b, f.a, x, axis=0)
+    return x
+
+
 def lufs(x: np.ndarray) -> float:
-    if x.shape[0] < SR // 2 or not np.any(x):
+    """BS.1770-4 integrated loudness; matches pyloudnorm.Meter.integrated_loudness."""
+    if x.ndim == 1:
+        x = x[:, None]
+    if x.shape[0] < int(0.4 * SR) or not np.any(x):
         return -70.0
-    v = _meter.integrated_loudness(x)
-    return float(v) if math.isfinite(v) else -70.0
+    return lufs_weighted(k_weight(x))
+
+
+def lufs_weighted(k: np.ndarray) -> float:
+    """Integrated loudness of an already K-weighted signal (400 ms blocks, 75% overlap, -70 LUFS absolute and
+    -10 LU relative gates). Lets several spans of one song share a single K-weighting pass."""
+    if k.ndim == 1:
+        k = k[:, None]
+    if k.shape[0] < int(0.4 * SR) or not np.any(k):
+        return -70.0
+    t_g, step = 0.4, 0.25
+    blocks = int(np.round((k.shape[0] / SR - t_g) / (t_g * step))) + 1
+    j = np.arange(blocks)
+    lo = (t_g * (j * step) * SR).astype(int)
+    hi = (t_g * (j * step + 1) * SR).astype(int)
+    c = np.vstack([np.zeros((1, k.shape[1])), np.cumsum(k ** 2, axis=0)])
+    hi = np.minimum(hi, k.shape[0])
+    z = (c[hi] - c[lo]) / (t_g * SR)  # per block, per channel mean square
+    power = z.sum(axis=1)
+    with np.errstate(divide="ignore"):
+        loud = -0.691 + 10 * np.log10(power)
+    abs_gated = loud >= -70.0
+    if not abs_gated.any():
+        return -70.0
+    rel = -0.691 + 10 * np.log10(z[abs_gated].mean(axis=0).sum()) - 10.0
+    gated = abs_gated & (loud > rel)
+    if not gated.any():
+        return -70.0
+    return float(-0.691 + 10 * np.log10(z[gated].mean(axis=0).sum()))
+
+
+def _blocks_near(x: np.ndarray, floor: float, block: int = 4096) -> list[tuple[int, int]]:
+    """Sample ranges (padded for the resampler's filter) of blocks whose sample peak reaches ``floor``."""
+    n = x.shape[0]
+    k = int(math.ceil(n / block))
+    peaks = np.pad(np.abs(x).max(axis=1), (0, k * block - n)).reshape(k, block).max(axis=1)
+    hits = np.flatnonzero(peaks >= floor)
+    pad = 64
+    return _merge([(max(0, i * block - pad), min(n, (i + 1) * block + pad)) for i in hits])
 
 
 def true_peak_db(x: np.ndarray) -> float:
-    return float(db(np.abs(resample_poly(x, 4, 1, axis=0)).max()))
+    """4x-oversampled peak. Inter-sample overs are at most a few dB above the sample peak, so only blocks within
+    6 dB of it are oversampled (same answer as oversampling everything, a fraction of the time)."""
+    sp = float(np.abs(x).max()) if x.size else 0.0
+    if sp <= 0:
+        return -240.0
+    best = sp
+    for a, b in _blocks_near(x, sp * 10 ** (-6 / 20)):
+        best = max(best, float(np.abs(resample_poly(x[a:b].astype(np.float32), 4, 1, axis=0)).max()))
+    return float(db(best))
+
+
+def _merge(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    out: list[list[int]] = []
+    for a, b in ranges:
+        if out and a <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    return [(a, b) for a, b in out]
 
 
 # ---------------------------------------------------------------- EQ (RBJ biquads, causal)
@@ -140,30 +205,45 @@ def soft_clip(x: np.ndarray, threshold_db: float, knee: float = 0.7) -> np.ndarr
     return np.sign(x) * shaped
 
 
-def _tp_envelope(x: np.ndarray) -> np.ndarray:
-    over = np.abs(resample_poly(x, 4, 1, axis=0)).max(axis=1)
-    frames = x.shape[0]
-    over = np.pad(over, (0, max(0, frames * 4 - over.size)))[: frames * 4]
-    return np.maximum(over.reshape(frames, 4).max(axis=1), np.abs(x).max(axis=1))
+def tp_envelope(x: np.ndarray, floor: float = 0.0) -> np.ndarray:
+    """Per-sample true peak (4x oversampled). Blocks whose sample peak stays under ``floor`` keep the sample peak:
+    a limiter only needs the exact value where a peak can reach its ceiling."""
+    env = np.abs(x).max(axis=1)
+    blocks = _blocks_near(x, floor) if floor > 0 else [(0, x.shape[0])]
+    for a, b in blocks:
+        over = np.abs(resample_poly(x[a:b].astype(np.float32), 4, 1, axis=0)).max(axis=1)
+        m = b - a
+        over = np.pad(over, (0, max(0, m * 4 - over.size)))[: m * 4].reshape(m, 4).max(axis=1)
+        env[a:b] = np.maximum(env[a:b], over)
+    return env
 
 
-def limiter(x: np.ndarray, ceiling_db: float, *, release_ms: float = 60.0, lookahead_ms: float = 4.0,
-            block: int = 16) -> tuple[np.ndarray, np.ndarray]:
-    """Lookahead brickwall limiter on the 4x-oversampled (true) peak. Returns (audio, per-sample gain dB)."""
+def limiter_gain(env: np.ndarray, ceiling_db: float, *, release_ms: float = 60.0, lookahead_ms: float = 4.0,
+                 block: int = 32) -> np.ndarray:
+    """Per-sample gain (linear) that holds ``env`` (a true-peak envelope) under the ceiling: lookahead brickwall,
+    instant attack, exponential release, computed at a 32-sample control rate."""
     from scipy.ndimage import minimum_filter1d, uniform_filter1d
 
-    need = np.minimum(1.0, float(gain(ceiling_db)) / np.maximum(_tp_envelope(x), 1e-9))
+    need = np.minimum(1.0, float(gain(ceiling_db)) / np.maximum(env, 1e-9))
     n = int(math.ceil(need.size / block))
     need = np.pad(need, (0, n * block - need.size), constant_values=1.0).reshape(n, block).min(axis=1)
     reach = max(1, int(math.ceil(lookahead_ms / 1000 * SR / block)))
     target = uniform_filter1d(minimum_filter1d(need, size=2 * reach + 1, mode="nearest"), size=reach + 1, mode="nearest")
+    if target.min() >= 1.0:
+        return np.ones(env.size)
     coeff = math.exp(-block / (release_ms / 1000 * SR))
     g = np.empty(n)
     cur = 1.0
-    for i, t in enumerate(target):
+    for i, t in enumerate(target.tolist()):
         cur = t if t < cur else t + (cur - t) * coeff
         g[i] = cur
-    curve = _to_samples(g, block, x.shape[0])
+    return _to_samples(g, block, env.size)
+
+
+def limiter(x: np.ndarray, ceiling_db: float, *, release_ms: float = 60.0, lookahead_ms: float = 4.0) -> tuple[np.ndarray, np.ndarray]:
+    """Lookahead brickwall limiter on the true peak. Returns (audio, per-sample gain dB)."""
+    env = tp_envelope(x, float(gain(ceiling_db - 6.0)))
+    curve = limiter_gain(env, ceiling_db, release_ms=release_ms, lookahead_ms=lookahead_ms)
     return x * curve[:, None], db(curve)
 
 
@@ -180,8 +260,10 @@ def peak_tame(x: np.ndarray, over_p999_db: float = 1.5) -> tuple[np.ndarray, flo
 def octave_up(x: np.ndarray, *, below_hz: float = 50.0, amount: float = 0.4, fundamental_db: float = -1.5) -> np.ndarray:
     """Psychoacoustic bass: add an octave-up copy of the sub band (|z| sin 2phi, which does not raise the summed peak)
     and trim the fundamental. Moves a 30-40 Hz 808 into 60-80 Hz, where phones and ears work."""
+    from scipy.fft import next_fast_len
+
     sub = sosfiltfilt(butter(4, below_hz, btype="lowpass", fs=SR, output="sos"), x, axis=0)
-    z = hilbert(sub, axis=0)
+    z = hilbert(sub, N=next_fast_len(sub.shape[0]), axis=0)[: sub.shape[0]]  # FFT at a fast length
     octv = np.imag(z * z) / np.maximum(np.abs(z), 1e-9)
     octv = bandpass(octv, below_hz * 0.9, below_hz * 2.4)
     return x + sub * (float(gain(fundamental_db)) - 1) + amount * octv
@@ -250,9 +332,8 @@ def presence_ride(vocal: np.ndarray, rest: np.ndarray, *, target_db: float = 6.5
     vm = vocal.mean(axis=1)
     hop, size = int(0.1 * SR), int(window * SR)
     starts = np.arange(0, max(1, vm.size - size), hop)
-    lvl = np.array([10 * np.log10(np.mean(vm[s:s + size] ** 2) + 1e-15) for s in starts])
-    pres = np.array([10 * np.log10((np.mean(vb[s:s + size] ** 2) + 1e-15) / (np.mean(rb[s:s + size] ** 2) + 1e-15))
-                     for s in starts])
+    lvl = window_db(vm, starts, size)
+    pres = window_db(vb, starts, size) - window_db(rb, starts, size)
     active = lvl > max(-60.0, float(np.max(lvl)) - 18.0)
     hold = 5  # windows (0.5 s)
     gains, held, idle = np.zeros(lvl.size), 0.0, 0
@@ -278,3 +359,10 @@ def active_rms_db(x: np.ndarray, floor_db: float = 40.0) -> float:
     e = np.sqrt(np.mean(m[: k * hop].reshape(k, hop) ** 2, axis=1))
     on = e > np.max(e) * 10 ** (-floor_db / 20)
     return float(db(np.sqrt(np.mean(e[on] ** 2)))) if on.any() else -120.0
+
+
+def window_db(x: np.ndarray, starts: np.ndarray, size: int) -> np.ndarray:
+    """Mean-square level (dB) of x[s:s+size] for every start, in one pass (cumulative sums)."""
+    c = np.concatenate([[0.0], np.cumsum(np.asarray(x, dtype=np.float64) ** 2)])
+    ends = np.minimum(starts + size, x.size)
+    return 10 * np.log10((c[ends] - c[starts]) / np.maximum(ends - starts, 1) + 1e-15)

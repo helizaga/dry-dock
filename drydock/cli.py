@@ -29,11 +29,15 @@ def main(argv: list[str] | None = None) -> int:
     if not args.audio.exists():
         print(f"no such file: {args.audio}", file=sys.stderr)
         return 2
-    settings = engineer.Settings(mode=args.mode).override(args.overrides)
     slug = args.slug or paths.slugify(args.audio.stem)
     from drydock.master import run
 
-    out = run(args.audio, slug, settings)
+    try:
+        settings = engineer.Settings(mode=args.mode).override(args.overrides).validate()
+        out = run(args.audio, slug, settings)
+    except ValueError as exc:
+        print(f"drydock: {exc}", file=sys.stderr)
+        return 2
     print(out)
     return 0
 

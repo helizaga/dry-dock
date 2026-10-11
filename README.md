@@ -46,7 +46,8 @@ Each run writes `runs/<slug>/<stamp>/`:
 - **Stems** (BS-RoFormer vocals, HT-Demucs drums/bass/other). The residual (mix minus stems) is added back untouched.
 - **Vocal**: de-box, presence, de-ess, compression at its own level, spike limiter, and a boost-only ride wherever
   it sits under the beat in 1-4 kHz. If the vocal is buried, the melodic layer and drums dip in the vocal's
-  frequency bins while it sings. A vocal that is already forward gets no extra lift.
+  frequency bins while it sings. A vocal that is already forward gets no extra lift; an instrumental (no lead
+  vocal in the stems) skips the vocal moves.
 - **Drums**: hat/ess hump cut when 6-9 kHz runs hot, transient soft clip.
 - **808**: when the bass line sits below 45 Hz (phones stop there), an octave-up copy, a trimmed fundamental, a
   little upper harmonics, and ducking under the kick.
@@ -56,9 +57,15 @@ Each run writes `runs/<slug>/<stamp>/`:
   whose limiter stays within budget in the beat sections. Then per-section cuts so the intro, breaks and outro sit
   where they did in the bounce.
 
+## Speed
+
+A 3-minute song takes about 4 minutes the first time (stem separation on Apple Silicon) and about 30 seconds per
+re-run after that: stems and analysis are cached, the four stem chains and the three lossy encodes run in
+parallel, and QA measures the master while it encodes.
+
 ## Limits
 
-It cannot listen. QA measures loudness, peaks, contrast, limiter load, distortion, mono, and vocal audibility; it
+Inputs under 10 seconds or silent files are rejected with a message, not a traceback. It cannot listen. QA measures loudness, peaks, contrast, limiter load, distortion, mono, and vocal audibility; it
 cannot judge groove, tone taste, or separation artifacts. A lossless bounce or session stems beat an MP3.
 
 Development: `.venv/bin/python -m pytest`.

@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dry-dock"
+version = "0.1.0"
+description = "Agent-first mix repair and mastering for finished songs: stems, per-element fixes, a deterministic master, and QA."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  # Shared engine: decoding, beat grid + sections, stem models, spectral ducking. Pinned to a pushed commit so the
+  # name can never resolve to an unrelated package; for local work install the sibling checkout first (README).
+  "glass-harbor[ml] @ git+https://github.com/helizaga/glass-harbor@a20c34d389c92fb4bc3400c69393e2593d7fdde0",
+  "numpy>=1.26",
+  "scipy>=1.11",
+  "soundfile>=0.12",
+  "soxr>=0.3",
+  "pyloudnorm>=0.1.1",
+  "matplotlib>=3.8",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+drydock = "drydock.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["drydock*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

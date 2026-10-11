@@ -121,14 +121,21 @@ def beat_mask(frames: int, spans: list[tuple[int, int, str]], loudness: list[flo
     return mask
 
 
-def run(src: Path, slug: str, settings: engineer.Settings, log: Log = print) -> Path:
+def run(src: Path, slug: str, settings: engineer.Settings, log: Log = print, *,
+        roles: dict[str, str] | None = None) -> Path:
+    """Master ``src``: a bounce (separated into stems) or a folder of session stems (used as they are)."""
     from glass_harbor.grid import Grid
 
     from drydock import deliver, qa
 
     started = time.time()
     settings.validate()
-    source, meta = stem_io.load_source(src, slug, log)
+    user_stems = None
+    if src.is_dir():
+        log(f"reading stems from {src.name}")
+        source, meta, user_stems = stem_io.load_user_stems(src, slug, log, roles)
+    else:
+        source, meta = stem_io.load_source(src, slug, log)
     if source.shape[0] < MIN_SECONDS * dsp.SR:
         raise ValueError(f"{src.name} is {source.shape[0] / dsp.SR:.1f} s; dry-dock needs at least {MIN_SECONDS} s")
     if dsp.lufs(source) <= -60:
@@ -139,7 +146,10 @@ def run(src: Path, slug: str, settings: engineer.Settings, log: Log = print) -> 
     src_sections = measure.section_loudness(source, spans)
     mask = beat_mask(source.shape[0], spans, src_sections)
 
-    stems = stem_io.separate(source, slug, log) if settings.mode == "stems" else None
+    if settings.mode != "stems":
+        stems = None
+    else:
+        stems = user_stems if user_stems is not None else stem_io.separate(source, slug, log)
     has_vocal = stems is not None and engineer.has_vocal(stems["vocals"], source)
     if stems is not None and not has_vocal:
         log("no lead vocal found: treating the song as an instrumental")
@@ -151,7 +161,8 @@ def run(src: Path, slug: str, settings: engineer.Settings, log: Log = print) -> 
     info: dict[str, Any] = {}
     if stems is not None:
         residual = source - sum(stems.values())
-        info["separation_residual_db"] = round(dsp.active_rms_db(residual) - dsp.active_rms_db(source), 1)
+        if user_stems is None:
+            info["separation_residual_db"] = round(dsp.active_rms_db(residual) - dsp.active_rms_db(source), 1)
         log("fixing stems")
         processed, info["stems"] = engineer.process_stems(stems, source, settings)
         bus, info["bus"] = engineer.bus_from_stems(processed, residual, settings)
@@ -211,5 +222,7 @@ def run(src: Path, slug: str, settings: engineer.Settings, log: Log = print) -> 
     (out / "qa.json").write_text(json.dumps(report, indent=1, default=float))
     (out / "qa.md").write_text(qa.markdown(report, title))
     (out / "settings.json").write_text(json.dumps(settings.to_dict(), indent=1))
+    (out / "analysis.json").write_text(json.dumps({k: analysis[k] for k in ("bpm", "key", "grid", "sections") if k in analysis}))
     log(f"done in {time.time() - started:.0f}s: {out}")
+    log(f"listen and comment: drydock review {slug}")
     return out

@@ -31,16 +31,20 @@ def sha256(path: Path) -> str:
 
 
 def decode(path: Path) -> np.ndarray:
-    """Float decode at 44.1 kHz stereo that keeps samples above full scale (bounces often peak over 0 dBFS)."""
+    """Float decode at 44.1 kHz stereo that keeps samples above full scale (bounces often peak over 0 dBFS).
+    Mono files are duplicated to both channels at full level (ffmpeg's own upmix would apply a -3 dB pan law)."""
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         raise RuntimeError("ffmpeg is required (brew install ffmpeg)")
     probe = subprocess.run([ffmpeg.replace("ffmpeg", "ffprobe"), "-v", "error", "-select_streams", "a:0", "-show_entries",
-                            "stream=sample_rate", "-of", "csv=p=0", str(path)], capture_output=True, text=True)
-    sr_in = int(probe.stdout.strip() or dsp.SR)
+                            "stream=sample_rate,channels", "-of", "json", str(path)], capture_output=True, text=True)
+    stream = (json.loads(probe.stdout or "{}").get("streams") or [{}])[0]
+    sr_in = int(stream.get("sample_rate") or dsp.SR)
+    mono = int(stream.get("channels") or 2) == 1
     raw = subprocess.run([ffmpeg, "-v", "error", "-nostdin", "-i", str(path), "-f", "f32le", "-acodec", "pcm_f32le",
-                          "-ac", "2", "-"], capture_output=True, check=True).stdout
-    x = np.frombuffer(raw, dtype=np.float32).reshape(-1, 2).astype(np.float64)
+                          "-ac", "1" if mono else "2", "-"], capture_output=True, check=True).stdout
+    x = np.frombuffer(raw, dtype=np.float32).astype(np.float64)
+    x = np.repeat(x[:, None], 2, axis=1) if mono else x.reshape(-1, 2)
     if sr_in != dsp.SR:
         import soxr
 
@@ -139,3 +143,95 @@ def separate(x: np.ndarray, slug: str, log: Log) -> dict[str, np.ndarray]:
     for n, y in stems.items():
         sf.write(out_dir / f"{n}.wav", y.astype(np.float32), dsp.SR, subtype="FLOAT")
     return stems
+
+
+# ---------------------------------------------------------------- user-provided stems
+
+AUDIO_EXTS = {".wav", ".wave", ".aif", ".aiff", ".flac", ".mp3", ".m4a", ".caf", ".ogg"}
+ROLE_WORDS = (  # checked in order; the first role with a matching word wins. "x*" matches a prefix, otherwise
+    # whole words (plural "s" allowed). "lead" and "break" are left out: "Lead Synth" and "Break FX" are not vocals/drums.
+    ("drums", ("bass drum", "bassdrum", "kick drum")),
+    ("vocals", ("vox", "vocal", "voc", "adlib", "ad lib", "bgv", "backing", "harmon*", "double", "dbl", "hook", "verse",
+                "rap", "singer", "acap*", "acapella")),
+    ("bass", ("808", "bass", "sub", "subbass")),
+    ("drums", ("drum", "kick", "snare", "clap", "hat", "hihat", "hh", "perc*", "cymbal", "crash", "ride", "tom", "rim",
+               "shaker", "snap", "loop drum")),
+)
+ROLES = ("vocals", "drums", "bass", "other")
+
+
+def guess_role(name: str) -> str:
+    """Role from a stem's file name: "808 Final.wav" -> bass, "Adlibs L.wav" -> vocals, anything unknown -> other."""
+    low = re.sub(r"[_\-.]+", " ", Path(name).stem.lower())
+    for role, words in ROLE_WORDS:
+        for w in words:
+            pattern = rf"(?<![a-z]){re.escape(w[:-1])}" if w.endswith("*") else rf"(?<![a-z]){re.escape(w)}s?(?![a-z])"
+            if re.search(pattern, low):
+                return role
+    return "other"
+
+
+def stem_files(folder: Path) -> list[Path]:
+    files = sorted(p for p in folder.iterdir() if p.suffix.lower() in AUDIO_EXTS and not p.name.startswith("."))
+    if not files:
+        raise ValueError(f"no audio files in {folder} (looked for {', '.join(sorted(AUDIO_EXTS))})")
+    return files
+
+
+def load_user_stems(folder: Path, slug: str, log: Log, roles: dict[str, str] | None = None
+                    ) -> tuple[np.ndarray, dict[str, Any], dict[str, np.ndarray]]:
+    """Stems exported from the session (no separation). Each file is assigned a role by name (``roles`` overrides
+    by file name), files sharing a role are summed, and the song is their sum. Cached like a decoded bounce."""
+    roles = roles or {}
+    files = stem_files(folder)
+    unknown = set(roles) - {f.name for f in files}
+    if unknown:
+        raise ValueError(f"--role names files that are not in {folder}: {', '.join(sorted(unknown))}")
+    bad = {r for r in roles.values() if r not in ROLES}
+    if bad:
+        raise ValueError(f"roles must be one of {', '.join(ROLES)}; got {', '.join(sorted(bad))}")
+    assignment = {f.name: roles.get(f.name, guess_role(f.name)) for f in files}
+    digest = hashlib.sha256(json.dumps([[f.name, sha256(f), assignment[f.name]] for f in files]).encode()).hexdigest()
+    work = paths.work_dir(slug)
+    work.mkdir(parents=True, exist_ok=True)
+    meta_path, stem_dir = work / "source.json", work / "stems"
+    if (meta_path.exists() and json.loads(meta_path.read_text()).get("sha256") == digest
+            and all((stem_dir / f"{r}.wav").exists() for r in ROLES)):
+        source = sf.read(work / "source.wav", dtype="float64", always_2d=True)[0]
+        stems = {r: sf.read(stem_dir / f"{r}.wav", dtype="float64", always_2d=True)[0] for r in ROLES}
+        return source, json.loads(meta_path.read_text()), stems
+    for stale in ("analysis.json", "stems"):
+        p = work / stale
+        if p.is_dir():
+            shutil.rmtree(p)
+        elif p.exists():
+            p.unlink()
+    decoded, info = {}, []
+    for f in files:
+        log(f"  {f.name} -> {assignment[f.name]}")
+        decoded[f.name] = decode(f)
+        stream = _probe(f)
+        info.append({"file": f.name, "role": assignment[f.name], "codec": stream.get("codec_name"),
+                     "sample_rate": int(stream.get("sample_rate", 0) or 0),
+                     "seconds": round(decoded[f.name].shape[0] / dsp.SR, 2)})
+    n = max(y.shape[0] for y in decoded.values())
+    if n - min(y.shape[0] for y in decoded.values()) > dsp.SR:
+        log("  warning: stem lengths differ by more than a second; export every stem from the session start")
+    stems = {r: np.zeros((n, 2)) for r in ROLES}
+    for name, y in decoded.items():
+        stems[assignment[name]][: y.shape[0]] += y
+    source = sum(stems.values())
+    stem_dir.mkdir(parents=True, exist_ok=True)
+    for r, y in stems.items():
+        sf.write(stem_dir / f"{r}.wav", y.astype(np.float32), dsp.SR, subtype="FLOAT")
+    sf.write(work / "source.wav", source.astype(np.float32), dsp.SR, subtype="FLOAT")
+    meta = {"file": folder.name, "sha256": digest, "codec": "stems", "user_stems": True, "stems": info,
+            "sample_rate": max(i["sample_rate"] for i in info), "bit_rate": None, "seconds": round(n / dsp.SR, 2)}
+    meta_path.write_text(json.dumps(meta, indent=2))
+    return source, meta, stems
+
+
+def _probe(path: Path) -> dict[str, Any]:
+    probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
+                            "stream=codec_name,sample_rate,bit_rate", "-of", "json", str(path)], capture_output=True, text=True)
+    return (json.loads(probe.stdout or "{}").get("streams") or [{}])[0]

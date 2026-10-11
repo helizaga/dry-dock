@@ -25,11 +25,28 @@ the stem models (a few GB) into `~/.cache/glass-harbor/models`.
 ## Use
 
 ```sh
-.venv/bin/drydock master "path/to/bounce.wav"                 # stems mode: fix each element, then master
+.venv/bin/drydock master "path/to/bounce.wav"                 # split into stems, fix each element, master
+.venv/bin/drydock master --stems "path/to/Stems Folder"       # session stems: no separation, best quality
 .venv/bin/drydock master "path/to/bounce.wav" --mode 2track   # stereo file only (no separation artifacts)
 .venv/bin/drydock master song.wav --set ride_target_db=7 --set width=0
 .venv/bin/drydock settings                                    # every knob and its default
 ```
+
+With `--stems`, each file gets a role from its name (`808.wav` -> bass, `Adlibs.wav` -> vocals, `Hats.wav` ->
+drums, anything else -> other); files sharing a role are summed. Fix a guess with `--role "Keys 2.wav=vocals"`.
+Export every stem from the session start so they line up.
+
+## Listen and comment
+
+```sh
+.venv/bin/drydock review <slug>                               # local page: A/B masters, comments pinned to time
+.venv/bin/drydock comment <slug> "vocal too quiet" --at 1:12 --tag vocal   # or leave it from chat
+.venv/bin/drydock feedback <slug>                             # open comments with bar, section, settings used
+.venv/bin/drydock resolve <slug> <ids> --note "ride target 8"
+```
+
+The page (glass-harbor's review page) plays every master and the original at -14 LUFS, so the A/B is fair. A new
+`drydock master` run shows up in the page next to the previous one.
 
 Each run writes `runs/<slug>/<stamp>/`:
 

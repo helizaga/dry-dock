@@ -106,3 +106,108 @@ def test_settings_validation():
     with pytest.raises(ValueError):
         engineer.Settings(target_lufs=-3).validate()
     engineer.Settings(target_lufs=-9, width=0.3).validate()
+
+
+# ---------------------------------------------------------------- session stems
+
+
+def _stem_folder(home, vocal=True):
+    _, st = _song(vocal=vocal)
+    folder = home / "Song Stems"
+    folder.mkdir()
+    sf.write(folder / "Lead Vox.wav", st["vocals"][:, 0] * 0.7, SR, subtype="PCM_24")  # mono file
+    sf.write(folder / "Adlibs.wav", st["vocals"] * 0.3, SR, subtype="PCM_24")
+    sf.write(folder / "808.wav", st["bass"], SR, subtype="PCM_24")
+    sf.write(folder / "Kick and Hats.wav", st["drums"], SR, subtype="PCM_24")
+    sf.write(folder / "Keys.wav", st["other"], SR, subtype="PCM_24")
+    sf.write(folder / "notes.txt", np.zeros((10, 1)), SR, format="WAV")  # not audio by extension: ignored
+    return folder, st
+
+
+def test_guess_role_reads_session_file_names():
+    expected = {"808 Final.wav": "bass", "Adlibs L.wav": "vocals", "Lead Vox.wav": "vocals", "Bass Drum.aif": "drums",
+                "Hi-Hats.wav": "drums", "Keys.wav": "other", "Lead Synth.wav": "other", "Tombstone pad.wav": "other",
+                "Synth Bass.wav": "bass", "Harmonies.wav": "vocals", "Percussion.wav": "drums", "Subtle FX.wav": "other"}
+    assert {n: stems.guess_role(n) for n in expected} == expected
+
+
+def test_user_stems_are_summed_by_role(home):
+    folder, st = _stem_folder(home)
+    source, meta, user = stems.load_user_stems(folder, "s", lambda m: None)
+    assert meta["user_stems"] and len(meta["stems"]) == 5
+    assert {s["file"]: s["role"] for s in meta["stems"]}["Kick and Hats.wav"] == "drums"
+    assert np.allclose(source, sum(user.values()))
+    assert np.allclose(user["bass"], st["bass"], atol=1e-6)
+    assert np.allclose(user["vocals"][:, 1], st["vocals"][:, 1] * 0.7 + st["vocals"][:, 1] * 0.3, atol=1e-5)
+    _, meta2, user2 = stems.load_user_stems(folder, "s2", lambda m: None, {"Keys.wav": "vocals"})
+    assert np.allclose(user2["other"], 0) and {s["file"]: s["role"] for s in meta2["stems"]}["Keys.wav"] == "vocals"
+    with pytest.raises(ValueError):
+        stems.load_user_stems(folder, "s3", lambda m: None, {"Nope.wav": "bass"})
+    with pytest.raises(ValueError):
+        stems.load_user_stems(folder, "s4", lambda m: None, {"Keys.wav": "piano"})
+
+
+def test_master_from_session_stems(home, monkeypatch):
+    def no_separation(*a, **k):
+        raise AssertionError("session stems must not be separated")
+
+    monkeypatch.setattr(stems, "separate", no_separation)
+    folder, _ = _stem_folder(home)
+    out = master.run(folder, "stemsong", engineer.Settings(), log=lambda m: None)
+    qa = json.loads((out / "qa.json").read_text())
+    assert qa["processing"]["stems"]["has_vocal"] is True
+    assert any(n.startswith("Session stems") for n in qa["source_notes"])
+    assert not any("Separation artifacts" in e for e in qa["needs_ears"])
+    assert "separation_residual_db" not in qa["processing"]
+    assert {c["check"]: c["status"] for c in qa["checks"]}["true peak"] == "pass"
+
+
+# ---------------------------------------------------------------- listening loop
+
+
+def test_review_server_and_feedback_loop(home, monkeypatch, capsys):
+    import threading
+    import urllib.request
+
+    from drydock import cli, review
+
+    out, _ = _run(home, monkeypatch, "2track")
+    run = out.name
+    server = review.serve("synth", 0)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        def get(path, headers=None):
+            with urllib.request.urlopen(urllib.request.Request(base + path, headers=headers or {})) as r:
+                return r.status, r.headers, r.read()
+
+        status, _, body = get("/api/session")
+        session = json.loads(body)
+        assert session["runs"] == [review.ORIGINAL, run] and "808" in session["tags"]
+        data = json.loads(get(f"/api/run/{run}")[2])
+        assert data["timeline"]["bars"][0]["bar"] == 1 and len(data["timeline"]["clips"]) == 2
+        assert len(data["peaks"]) == 2400
+        status, headers, chunk = get("/audio/original", {"Range": "bytes=0-99"})
+        assert status == 206 and len(chunk) == 100 and headers["Content-Type"] == "audio/flac"
+        req = urllib.request.Request(base + f"/api/run/{run}/comments", method="POST",
+                                     data=json.dumps({"time_s": 5.0, "end_s": 6.0, "tag": "vocal",
+                                                      "text": "vocal too quiet"}).encode(),
+                                     headers={"Content-Type": "application/json"})
+        comment = json.loads(urllib.request.urlopen(req).read())
+        assert comment["bar"] == pytest.approx(3.5, abs=0.01) and comment["clips"] == ["bars 3-10"]
+        bad = urllib.request.Request(base + f"/api/run/{run}/comments", method="POST", data=b"{}",
+                                     headers={"Content-Type": "text/plain"})  # simple POST from another site
+        with pytest.raises(urllib.error.HTTPError) as err:
+            urllib.request.urlopen(bad)
+        assert err.value.code == 403
+    finally:
+        server.shutdown()
+
+    assert cli.main(["comment", "synth", "808 too loud", "--at", "0:12", "--tag", "808"]) == 0
+    assert cli.main(["feedback", "synth"]) == 0
+    printed = capsys.readouterr().out
+    assert "2 open comment(s)" in printed and "vocal too quiet" in printed and "808 too loud" in printed
+    assert cli.main(["resolve", "synth", comment["id"], "--note", "ride target 8"]) == 0
+    _, still_open, _ = review.open_comments("synth")
+    assert [c["text"] for c in still_open] == ["808 too loud"]
+    assert cli.main(["feedback", "nope"]) == 2

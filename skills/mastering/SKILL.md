@@ -9,13 +9,16 @@ The CLI makes every audio decision from measurements and records why. Your job: 
 result in plain terms, and turn listening notes into `--set` overrides.
 
 ## 1. Source
-- Prefer a 24-bit WAV bounce or session stems. An MP3 works, but say what it costs (no top octave, lossy grit).
+- Best: stems exported from the session (every track or bus from the session start, WAV). Then a 24-bit WAV
+  bounce. An MP3 works, but say what it costs (no top octave, lossy grit, separation artifacts).
 - Never commit or upload the audio. Outputs stay in gitignored `runs/`.
 
 ## 2. Run
 ```sh
 .venv/bin/drydock master "<bounce>" --slug <name>
+.venv/bin/drydock master --stems "<folder>" --slug <name>     # session stems: check the role each file got
 ```
+With `--stems`, read the `file -> role` lines in the output; fix a wrong guess with `--role "File.wav=bass"`.
 Stems are cached in `work/<slug>/`; re-runs with new `--set` values take about a minute.
 Use `--mode 2track` when the user hears separation artifacts (watery vocal edges, swirly hats).
 
@@ -33,6 +36,13 @@ Use `--mode 2track` when the user hears separation artifacts (watery vocal edges
   the whole mix; offer it as a separate choice, never silently.
 
 ## 5. Iterate on ears
+The listener runs `drydock review <slug>` (or says it in chat; record it with `drydock comment <slug> "..." --at m:ss
+--tag <tag>`). Then:
+1. `drydock feedback <slug>`: open comments with bar, section, and the settings that run used.
+2. Re-run `drydock master` on the same source and slug with `--set` changes from the table below.
+3. `drydock resolve <slug> <ids> --run <old run> --note "what changed, new run id"`. The new run appears in the
+   review page next to the old one for an A/B.
+
 | The listener says | Try |
 |---|---|
 | vocal too loud / too quiet | `--set vocal_lift_db=-1` / `--set ride_target_db=8` |

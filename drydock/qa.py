@@ -64,7 +64,16 @@ def report(*, source, master, meta, analysis, spans, stems, processed, settings,
                              + (f" ({', '.join(map(str, weak_a))})" if weak_a else "")))
 
     notes = []
-    if (meta.get("codec") or "") in LOSSY:
+    if meta.get("user_stems"):
+        by_role: dict[str, int] = {}
+        for s_ in meta["stems"]:
+            by_role[s_["role"]] = by_role.get(s_["role"], 0) + 1
+        notes.append("Session stems, no separation: " + ", ".join(f"{r} {n}" for r, n in sorted(by_role.items()))
+                     + " file(s). 'Original' in comparisons is the unmastered sum of the stems.")
+        lossy = [s_["file"] for s_ in meta["stems"] if (s_.get("codec") or "") in LOSSY]
+        if lossy:
+            notes.append(f"Lossy stems ({', '.join(lossy)}); export WAV from the session for full quality.")
+    elif (meta.get("codec") or "") in LOSSY:
         kbps = f" at {meta['bit_rate'] // 1000} kbps" if meta.get("bit_rate") else ""
         notes.append(f"Source is {meta['codec'].upper()}{kbps}; a 24-bit WAV bounce (or stems) would master cleaner.")
     if src_lv["samples_over_full_scale"]:
@@ -76,7 +85,7 @@ def report(*, source, master, meta, analysis, spans, stems, processed, settings,
         notes.append(f"The mix is near mono (L/R correlation {src_st['correlation']}).")
 
     ears = ["Does the drop still hit as hard as in the bounce?"]
-    if stems is not None:
+    if stems is not None and not meta.get("user_stems"):
         ears.append("Separation artifacts: watery vocal edges, swirly hats, a ghost vocal in the sides.")
     if settings.width:
         ears.append("Width on keys/pads: natural or phasey on headphones?")
@@ -118,7 +127,8 @@ def markdown(r: dict[str, Any], title: str) -> str:
     sec = r["sections"]
     lines = [f"# {title}: master report", "",
              f"{r['song']['bpm']} BPM, {r['song']['key']}, {r['song']['bars']} bars. Source: `{s['file']}` "
-             f"({s.get('codec')}, {s.get('sample_rate')} Hz).", "",
+             + (f"({len(s['stems'])} session stems)." if s.get("user_stems") else f"({s.get('codec')}, {s.get('sample_rate')} Hz).")
+             , "",
              "| | source | master |", "|---|---|---|",
              f"| Integrated loudness | {s['lufs']} LUFS | {m['lufs']} LUFS |",
              f"| True peak | {s['true_peak_dbtp']:+.2f} dBTP | {m['true_peak_dbtp']:+.2f} dBTP |",

@@ -14,11 +14,13 @@
 - Everything runs locally and free. Do not add paid services.
 - You cannot listen. Report what QA verified, what it cannot (groove, tone taste, separation artifacts), and ask
   for ear feedback.
-- Ask for a lossless bounce (24-bit WAV) or session stems when the source is an MP3.
+- Prefer session stems (`--stems`), then a 24-bit WAV bounce. Ask for them when the source is an MP3.
 
 ## Commands
-- `drydock master <audio> [--slug s] [--mode stems|2track] [--set name=value ...]`
+- `drydock master <audio> | --stems <folder> [--role FILE=ROLE] [--slug s] [--mode stems|2track] [--set name=value ...]`
 - `drydock settings` (every knob; `None` means decided from the song)
+- `drydock review <slug>` (listening page) / `drydock comment <slug> "text" --at m:ss [--tag t]`
+- `drydock feedback <slug>` / `drydock resolve <slug> <ids> --note "what changed"`
 
 ## Working style
 - If a judgment can be measured, encode it as a decision rule (`engineer.decide`) or a QA check (`qa.py`), with

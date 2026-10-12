@@ -21,6 +21,8 @@ result in plain terms, and turn listening notes into `--set` overrides.
 With `--stems`, read the `file -> role` lines in the output; fix a wrong guess with `--role "File.wav=bass"`.
 Stems are cached in `work/<slug>/`; re-runs with new `--set` values take about a minute.
 Use `--mode 2track` when the user hears separation artifacts (watery vocal edges, swirly hats).
+For a release, render `production=clean` and `production=produced` and let the listener pick in the review page:
+doubles and effects are taste calls.
 
 ## 3. Read qa.md
 - Every check should pass. A `warn` needs a reason or a fix before hand-off; a `fail` blocks it.
@@ -53,6 +55,10 @@ The listener runs `drydock review <slug>` (or says it in chat; record it with `d
 | 808 missing on phones | `--set bass_db=2` |
 | too wide / phasey | `--set width=0` |
 | hats harsh | `--set hat_cut_db=2.5` |
+| vocal sounds bare / amateur next to references | `--set production=produced` (hook doubles, reverb, throws) |
+| too much reverb / echo | `--set reverb_mix=0.04 --set throw_mix=0.15` |
+| ad-libs too loud / too wide | `--set backing_db=-3` / `--set backing_width=0.2` |
+| a re-pitched note sounds processed | `--set note_fix=false` (and fix it in the session) |
 | needs to be louder | `--set target_lufs=-9` (QA will warn about limiter load; say so) |
 | drop does not hit | check the sections table; `--set section_rides=true` is the default |
 

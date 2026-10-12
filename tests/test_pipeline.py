@@ -44,10 +44,24 @@ def _analysis():
             "sections": [{"start_bar": 1, "bars": 2, "energy": "low"}, {"start_bar": 3, "bars": 8, "energy": "high"}]}
 
 
+def _fake_lyrics():
+    w = lambda word, a, b: {"word": word, "start": a, "end": b}
+    line = lambda a: {"start": a, "end": a + 1.0, "text": "need you now",
+                      "words": [w("need", a, a + 0.3), w("you", a + 0.3, a + 0.6), w("now", a + 0.6, a + 1.0)]}
+    return {"segments": [line(5.0), line(9.0), line(13.0)]}
+
+
 @pytest.fixture
 def home(tmp_path, monkeypatch):
+    from drydock import vocal
+
     monkeypatch.setenv("DRYDOCK_HOME", str(tmp_path))
     monkeypatch.setattr(stems, "analyze", lambda x, slug, log: _analysis())
+    # no ML in tests: a fixed lead/backing split, canned lyrics, one flagged note
+    monkeypatch.setattr(vocal, "split_lead", lambda v, slug, tag, log: (v * 0.8, v * 0.2))
+    monkeypatch.setattr(vocal, "transcribe", lambda lead, slug, tag, log: _fake_lyrics())
+    monkeypatch.setattr(vocal, "off_notes", lambda lead, slug, tag, key, **k: [
+        {"t0": 6.0, "t1": 6.5, "midi": 57.3, "target": 57, "cents": 30.0}])
     return tmp_path
 
 
@@ -59,7 +73,7 @@ def _run(home, monkeypatch, mode, vocal=True):
     # 48 kHz / 24-bit input exercises the resampling decode
     sf.write(src, np.clip(soxr.resample(mix * 0.9, SR, 48000), -1, 1), 48000, subtype="PCM_24")
     if mode == "stems":
-        monkeypatch.setattr(stems, "separate", lambda x, slug, log: {k: v[: x.shape[0]] * 0.9 for k, v in st.items()})
+        monkeypatch.setattr(stems, "separate", lambda x, slug, log, **k: {n: v[: x.shape[0]] * 0.9 for n, v in st.items()})
     out = master.run(src, "synth", engineer.Settings(mode=mode), log=lambda m: None)
     return out, json.loads((out / "qa.json").read_text())
 
@@ -212,3 +226,21 @@ def test_review_server_and_feedback_loop(home, monkeypatch, capsys):
     _, still_open, _ = review.open_comments("synth")
     assert [c["text"] for c in still_open] == ["808 too loud"]
     assert cli.main(["feedback", "nope"]) == 2
+
+
+def test_vocal_production_clean_and_produced(home, monkeypatch):
+    _, clean = _run(home, monkeypatch, "stems")
+    vp = clean["processing"]["vocal_production"]
+    assert vp["production"] == "clean" and len(vp["notes_fixed"]) == 1 and vp["notes_fixed"][0]["bar"] == pytest.approx(4.0, abs=0.01)
+    assert any("Re-pitched note at 0:06.0" in e for e in clean["needs_ears"])
+    from drydock import engineer
+
+    mix, st = _song()
+    src = home / "song.wav"
+    monkeypatch.setattr(stems, "separate", lambda x, slug, log, **k: {n: v[: x.shape[0]] * 0.9 for n, v in st.items()})
+    out = master.run(src, "synth", engineer.Settings(production="produced"), log=lambda m: None)
+    produced = json.loads((out / "qa.json").read_text())
+    vp = produced["processing"]["vocal_production"]
+    assert vp["production"] == "produced" and len(vp["hook_lines"]) == 3 and vp["throws"] == 3
+    assert "## Vocal production" in (out / "qa.md").read_text()
+    assert {c["check"]: c["status"] for c in produced["checks"]}["true peak"] == "pass"

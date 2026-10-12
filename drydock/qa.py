@@ -100,8 +100,17 @@ def report(*, source, master, meta, analysis, spans, stems, processed, settings,
         ears.append("Width on keys/pads: natural or phasey on headphones?")
     if settings.octave_up:
         ears.append("808 on a big system vs a phone: fundamentals are slightly lower, the octave is louder.")
-    if vocal:
+    if vocal and settings.ride_target_db:
         ears.append("Vocal ride: any phrase that now jumps out, or a breath lifted? Vocal level is a taste call.")
+    vp = info.get("vocal_production")
+    if vp:
+        for n in vp["notes_fixed"]:
+            ears.append(f"Re-pitched note at {int(n['time_s'] // 60)}:{n['time_s'] % 60:04.1f} (bar {n['bar']}, "
+                        f"{n['cents']:+.0f} cents): natural, or a pitch-shift artifact?")
+        ears.append(f"Backing/ad-libs sit {vp['backing_level_vs_lead_db']:+.1f} dB vs the lead, wider: do they still read?")
+        if vp["production"] == "produced":
+            ears.append(f"Hook doubles on {len(vp['hook_lines'])} line(s) and delay throws on {vp['throws']} line ending(s): "
+                        "too much, too little?")
     return {"source": {**meta, **src_lv, "tone": measure.tone(source), "stereo": src_st, "content_cutoff_hz": cutoff},
             "master": {**mst_lv, "tone": measure.tone(written), "stereo": mst_st},
             "sections": {"names": [s for _, _, s in spans], "source_lufs": sec_src, "master_lufs": sec_mst,
@@ -153,6 +162,16 @@ def markdown(r: dict[str, Any], title: str) -> str:
     lines += [f"| {n} | {a} | {b} | {d:+.1f} |" for n, a, b, d in zip(sec["names"], sec["source_lufs"], sec["master_lufs"], sec["balance_shift_lu"])]
     lines += ["", "## Decisions", ""]
     lines += [f"- `{k}` = {r['decisions']['settings'][k]}: {why}" for k, why in r["decisions"]["why"].items()]
+    vp = r["processing"].get("vocal_production")
+    if vp:
+        lines += ["", "## Vocal production", "",
+                  f"- Lead and backing treated separately (backing {vp['backing_level_vs_lead_db']:+.1f} dB vs lead, widened).",
+                  f"- Notes re-pitched: {len(vp['notes_fixed'])}"
+                  + "".join(f"\n  - {int(n['time_s'] // 60)}:{n['time_s'] % 60:04.1f} bar {n['bar']}: {n['cents']:+.0f} cents, "
+                            f"{n['seconds']} s" for n in vp["notes_fixed"]),
+                  f"- Production: {vp['production']}"
+                  + (f" (hook doubles on {len(vp['hook_lines'])} line(s), delay throws on {vp['throws']} line ending(s), "
+                     "plate reverb)" if vp["production"] == "produced" else " (no added doubles or effects)")]
     if r["source_notes"]:
         lines += ["", "## Source notes", ""] + [f"- {n}" for n in r["source_notes"]]
     lines += ["", "## Needs ears", ""] + [f"- {e}" for e in r["needs_ears"]]

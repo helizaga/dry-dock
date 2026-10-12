@@ -113,6 +113,30 @@ def section_rides(source: np.ndarray, master: np.ndarray, spans: list[tuple[int,
                  "cut_db": [round(c, 2) for c in cuts], "after_lufs": measure.section_loudness(out[:n], spans)}
 
 
+def vocal_prep(vocals: np.ndarray, slug: str, tag: str, analysis: dict, grid, settings: engineer.Settings,
+               log: Log) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Lead/backing split, note fixes, and (for "produced") the hook and line-end spans from the lyrics."""
+    from drydock import vocal
+
+    lead, backing = vocal.split_lead(vocals, slug, tag, log)
+    notes = vocal.off_notes(lead, slug, tag, (analysis.get("key") or {}).get("name")) if settings.note_fix else []
+    if notes:
+        log(f"re-pitching {len(notes)} held note(s)")
+        lead = vocal.fix_notes(lead, notes)
+    hooks: list[tuple[float, float]] = []
+    throws: list[tuple[float, float]] = []
+    if settings.production == "produced":
+        lyrics = vocal.transcribe(lead, slug, tag, log)
+        hooks, throws = vocal.hook_spans(lyrics), vocal.line_ends(lyrics, min_gap_s=grid.period)
+    info = {"lead_split": True, "backing_level_vs_lead_db": round(dsp.active_rms_db(backing) - dsp.active_rms_db(lead), 1),
+            "notes_fixed": [{"time_s": n["t0"], "bar": round(grid.bar_at_time(n["t0"]), 1), "cents": n["cents"],
+                             "seconds": round(n["t1"] - n["t0"], 2)} for n in notes],
+            "production": settings.production,
+            "hook_lines": [{"bar": round(grid.bar_at_time(a), 1), "seconds": round(b - a, 1)} for a, b in hooks],
+            "throws": len(throws)}
+    return {"lead": lead, "backing": backing, "hooks": hooks, "throws": throws, "beat_s": grid.period}, info
+
+
 def beat_mask(frames: int, spans: list[tuple[int, int, str]], loudness: list[float]) -> np.ndarray:
     mask = np.zeros(frames, bool)
     for (a, b, _), v in zip(spans, loudness):
@@ -149,7 +173,7 @@ def run(src: Path, slug: str, settings: engineer.Settings, log: Log = print, *,
     if settings.mode != "stems":
         stems = None
     else:
-        stems = user_stems if user_stems is not None else stem_io.separate(source, slug, log)
+        stems = user_stems if user_stems is not None else stem_io.separate(source, slug, log, quality=settings.separation)
     has_vocal = stems is not None and engineer.has_vocal(stems["vocals"], source)
     if stems is not None and not has_vocal:
         log("no lead vocal found: treating the song as an instrumental")
@@ -163,8 +187,13 @@ def run(src: Path, slug: str, settings: engineer.Settings, log: Log = print, *,
         residual = source - sum(stems.values())
         if user_stems is None:
             info["separation_residual_db"] = round(dsp.active_rms_db(residual) - dsp.active_rms_db(source), 1)
+        prep = None
+        if has_vocal and settings.lead_split:
+            prep, info["vocal_production"] = vocal_prep(stems["vocals"], slug,
+                                                        "session" if user_stems is not None else settings.separation,
+                                                        analysis, grid, settings, log)
         log("fixing stems")
-        processed, info["stems"] = engineer.process_stems(stems, source, settings)
+        processed, info["stems"] = engineer.process_stems(stems, source, settings, prep)
         bus, info["bus"] = engineer.bus_from_stems(processed, residual, settings)
     else:
         processed = None

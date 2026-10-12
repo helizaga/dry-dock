@@ -60,11 +60,16 @@ Each run writes `runs/<slug>/<stamp>/`:
 
 ## What it does
 
-- **Stems** (BS-RoFormer vocals, HT-Demucs drums/bass/other). The residual (mix minus stems) is added back untouched.
+- **Stems** (glass-harbor's "best" vocal ensemble, or `--set separation=balanced` for one faster model; HT-Demucs
+  drums/bass/other). The residual (mix minus stems) is added back untouched.
 - **Vocal**: de-box, presence, de-ess, compression at its own level, spike limiter, and a boost-only ride wherever
   it sits under the beat in 1-4 kHz. If the vocal is buried, the melodic layer and drums dip in the vocal's
   frequency bins while it sings. A vocal that is already forward gets no extra lift; an instrumental (no lead
   vocal in the stems) skips the vocal moves.
+- **Vocal production** (stems mode): the lead and the backing/ad-libs are split and treated apart (backing thinner,
+  wider, steadier); held notes 25-60 cents off are re-pitched one by one (in key only, formants kept, everything
+  else untouched). `--set production=produced` adds detuned doubles on the repeated lyric lines (hooks, from local
+  Whisper), a light plate reverb, and dotted-eighth delay throws on line endings.
 - **Drums**: hat/ess hump cut when 6-9 kHz runs hot, transient soft clip.
 - **808**: when the bass line sits below 45 Hz (phones stop there), an octave-up copy, a trimmed fundamental, a
   little upper harmonics, and ducking under the kick.
@@ -76,7 +81,8 @@ Each run writes `runs/<slug>/<stamp>/`:
 
 ## Speed
 
-A 3-minute song takes about 4 minutes the first time (stem separation on Apple Silicon) and about 30 seconds per
+A 3-minute song takes about 15 minutes the first time (best-quality separation, the lead/backing split, and
+Whisper on Apple Silicon; about 4 with `separation=balanced`) and about 30 seconds per
 re-run after that: stems and analysis are cached, the four stem chains and the three lossy encodes run in
 parallel, and QA measures the master while it encodes.
 

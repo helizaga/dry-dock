@@ -52,6 +52,12 @@ def decode(path: Path) -> np.ndarray:
     return x
 
 
+def clear_work(work: Path) -> None:
+    """A new source invalidates everything cached for the song (analysis, stems, vocal split, lyrics, notes)."""
+    for p in work.iterdir():
+        shutil.rmtree(p) if p.is_dir() else p.unlink()
+
+
 def load_source(src: Path, slug: str, log: Log) -> tuple[np.ndarray, dict[str, Any]]:
     work = paths.work_dir(slug)
     work.mkdir(parents=True, exist_ok=True)
@@ -61,12 +67,7 @@ def load_source(src: Path, slug: str, log: Log) -> tuple[np.ndarray, dict[str, A
     if meta_path.exists() and cached.exists() and json.loads(meta_path.read_text()).get("sha256") == digest:
         x, _ = sf.read(cached, dtype="float64", always_2d=True)
         return x, json.loads(meta_path.read_text())
-    for stale in ("analysis.json", "stems"):
-        p = work / stale
-        if p.is_dir():
-            shutil.rmtree(p)
-        elif p.exists():
-            p.unlink()
+    clear_work(work)
     log(f"decoding {src.name}")
     x = decode(src)
     sf.write(cached, x.astype(np.float32), dsp.SR, subtype="FLOAT")
@@ -92,46 +93,51 @@ def analyze(x: np.ndarray, slug: str, log: Log) -> dict[str, Any]:
     return result
 
 
-def separate(x: np.ndarray, slug: str, log: Log) -> dict[str, np.ndarray]:
-    """BS-RoFormer vocals, then HT-Demucs drums/bass/other from the instrumental (glass-harbor's balanced profile).
-    Runs on a -6 dB copy so peaks above full scale survive the models' integer output."""
-    out_dir = paths.work_dir(slug) / "stems"
-    if all((out_dir / f"{n}.wav").exists() for n in STEMS):
-        return {n: sf.read(out_dir / f"{n}.wav", dtype="float64", always_2d=True)[0] for n in STEMS}
-    from glass_harbor.paths import model_dir
-    from glass_harbor.separate import PROFILES
-
+def run_separator(spec: dict[str, str], inp: Path, out: Path) -> dict[str, Path]:
+    """One audio-separator pass (a single model or a glass-harbor ensemble preset). Outputs keyed by the last
+    label in each file name: later passes' names also carry the labels of their input."""
     import os
 
     os.environ.setdefault("TQDM_DISABLE", "1")  # the models' progress bars flood agent logs
-    profile = PROFILES["balanced"]
-    out_dir.mkdir(parents=True, exist_ok=True)
-    pad = 6.0
-    with tempfile.TemporaryDirectory(prefix="drydock-sep-") as tmp, warnings.catch_warnings():
+    from glass_harbor.paths import model_dir
+
+    with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         from audio_separator.separator import Separator
 
+        preset = spec.get("ensemble_preset")
+        sep = Separator(log_level=30, model_file_dir=str(model_dir()), output_dir=str(out), output_format="WAV",
+                        **({"ensemble_preset": preset} if preset else {}))
+        sep.load_model() if preset else sep.load_model(model_filename=spec["model"])
+        found: dict[str, Path] = {}
+        for o in sep.separate(str(inp)):
+            p = Path(o) if Path(o).is_absolute() else out / o
+            labels = re.findall(r"\(([^)]+)\)", p.name)
+            if labels:
+                found.setdefault(labels[-1].lower(), p)
+        return found
+
+
+def separate(x: np.ndarray, slug: str, log: Log, quality: str = "best") -> dict[str, np.ndarray]:
+    """Vocals (BS-RoFormer, or glass-harbor's "best" vocal ensemble), then HT-Demucs drums/bass/other from the
+    instrumental. Runs on a -6 dB copy so peaks above full scale survive the models' integer output."""
+    out_dir = paths.work_dir(slug) / ("stems" if quality == "balanced" else f"stems-{quality}")
+    if all((out_dir / f"{n}.wav").exists() for n in STEMS):
+        return {n: sf.read(out_dir / f"{n}.wav", dtype="float64", always_2d=True)[0] for n in STEMS}
+    from glass_harbor.separate import PROFILES
+
+    profile = PROFILES[quality]
+    out_dir.mkdir(parents=True, exist_ok=True)
+    pad = 6.0
+    with tempfile.TemporaryDirectory(prefix="drydock-sep-") as tmp:
         tmp_dir = Path(tmp)
         src = tmp_dir / "mix.wav"
         sf.write(src, (x * dsp.gain(-pad)).astype(np.float32), dsp.SR, subtype="FLOAT")
-
-        def run(model: str, inp: Path, name: str) -> dict[str, Path]:
-            sep = Separator(log_level=30, model_file_dir=str(model_dir()), output_dir=str(tmp_dir / name),
-                            output_format="WAV")
-            sep.load_model(model_filename=model)
-            found = {}
-            for o in sep.separate(str(inp)):
-                p = Path(o) if Path(o).is_absolute() else tmp_dir / name / o
-                labels = re.findall(r"\(([^)]+)\)", p.name)  # the last label is this pass's; earlier ones are the input's
-                if labels:
-                    found.setdefault(labels[-1].lower(), p)
-            return found
-
-        log(f"separating vocals ({profile['vocals']['model']})")
-        two = run(profile["vocals"]["model"], src, "vocals")
-        inst = two.get("instrumental") or two["other"]
+        log(f"separating vocals ({quality}: {profile['vocals']})")
+        two = run_separator(profile["vocals"], src, tmp_dir / "vocals")
+        inst = two.get("instrumental") or two.get("other") or next(p for k, p in two.items() if k != "vocals")
         log(f"separating drums/bass/other ({profile['four_stem']['model']})")
-        four = run(profile["four_stem"]["model"], inst, "four")
+        four = run_separator(profile["four_stem"], inst, tmp_dir / "four")
 
         def read(p: Path) -> np.ndarray:
             y, _ = sf.read(p, dtype="float64", always_2d=True)
@@ -200,12 +206,7 @@ def load_user_stems(folder: Path, slug: str, log: Log, roles: dict[str, str] | N
         source = sf.read(work / "source.wav", dtype="float64", always_2d=True)[0]
         stems = {r: sf.read(stem_dir / f"{r}.wav", dtype="float64", always_2d=True)[0] for r in ROLES}
         return source, json.loads(meta_path.read_text()), stems
-    for stale in ("analysis.json", "stems"):
-        p = work / stale
-        if p.is_dir():
-            shutil.rmtree(p)
-        elif p.exists():
-            p.unlink()
+    clear_work(work)
     decoded, info = {}, []
     for f in files:
         log(f"  {f.name} -> {assignment[f.name]}")

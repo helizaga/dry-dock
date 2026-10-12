@@ -33,6 +33,15 @@ class Settings:
     sub_trim_db: float | None = None
     # melodic layer / stereo
     width: float | None = None
+    # vocal production (stems mode, when there is a lead vocal)
+    separation: str = "best"  # "best" (glass-harbor's vocal ensemble: slower, cleaner) or "balanced"
+    lead_split: bool = True  # treat the lead and the backing/ad-libs separately
+    note_fix: bool = True  # re-pitch held notes 25-60 cents off (in key only)
+    production: str = "clean"  # "clean": fixes only; "produced": + hook doubles, plate reverb, delay throws
+    backing_width: float = 0.4
+    backing_db: float = 0.0
+    reverb_mix: float = 0.08
+    throw_mix: float = 0.3
     # bus and master
     bus_presence_db: float | None = None
     target_lufs: float | None = None  # None: loudest level that keeps the limiter within its budget
@@ -69,6 +78,13 @@ class Settings:
             raise ValueError("ceiling_db must be between -6 and 0")
         if self.width is not None and not 0 <= self.width <= 1:
             raise ValueError("width must be between 0 and 1")
+        if self.separation not in ("best", "balanced"):
+            raise ValueError("separation must be 'best' or 'balanced'")
+        if self.production not in ("clean", "produced"):
+            raise ValueError("production must be 'clean' or 'produced'")
+        for name in ("backing_width", "reverb_mix", "throw_mix"):
+            if not 0 <= getattr(self, name) <= 1:
+                raise ValueError(f"{name} must be between 0 and 1")
         for name in ("ride_max_db", "deess_max_db", "drum_clip_db", "hat_cut_db", "kick_duck_db", "duck_other_db",
                      "duck_drums_db"):
             value = getattr(self, name)
@@ -141,8 +157,10 @@ def decide(s: Settings, source: np.ndarray, stems: dict[str, np.ndarray] | None,
 # ---------------------------------------------------------------- stems
 
 
-def process_stems(stems: dict[str, np.ndarray], source: np.ndarray, s: Settings) -> tuple[dict[str, np.ndarray], dict]:
-    """Per-element fixes. The residual (source minus stems) is passed through untouched by the caller."""
+def process_stems(stems: dict[str, np.ndarray], source: np.ndarray, s: Settings,
+                  prep: dict[str, Any] | None = None) -> tuple[dict[str, np.ndarray], dict]:
+    """Per-element fixes. The residual (source minus stems) is passed through untouched by the caller.
+    ``prep`` (vocal production): the note-fixed lead, the backing, and the hook and line-end spans."""
     from glass_harbor.spectral import spectral_duck
 
     info: dict[str, Any] = {}
@@ -162,7 +180,17 @@ def process_stems(stems: dict[str, np.ndarray], source: np.ndarray, s: Settings)
         on = vgr[vgr > 0.05]
         info["vocal"] = {"deess_p90_db": round(ess, 1), "comp_gr_p50_db": round(float(np.median(on)), 1) if on.size else 0.0,
                          "spike_cut_max_db": round(spike, 1), "lift_db": s.vocal_lift_db}
-        return v
+        if prep is None:
+            return v
+        from drydock import vocal
+
+        backing = vocal.treat_backing(prep["backing"], width=s.backing_width, level_db=s.backing_db)
+        if s.production == "produced":
+            v = vocal.hook_doubles(v, prep["hooks"])
+            wet = vocal.sends(v, backing, prep["throws"], prep["beat_s"], reverb_mix=s.reverb_mix, throw_mix=s.throw_mix)
+        else:
+            wet = 0.0
+        return v + backing + wet
 
     def drum_chain(d: np.ndarray) -> np.ndarray:
         d = dsp.eq(d, [("peak", 7200, -s.hat_cut_db, 1.4)])
@@ -191,8 +219,9 @@ def process_stems(stems: dict[str, np.ndarray], source: np.ndarray, s: Settings)
     from concurrent.futures import ThreadPoolExecutor
 
     with ThreadPoolExecutor(max_workers=4) as pool:  # the four chains are independent (scipy releases the GIL)
-        jobs = [pool.submit(f, stems[k]) for f, k in ((vocal_chain, "vocals"), (drum_chain, "drums"),
-                                                       (bass_chain, "bass"), (other_chain, "other"))]
+        lead_in = prep["lead"] if prep is not None else stems["vocals"]
+        jobs = [pool.submit(vocal_chain, lead_in)] + [pool.submit(f, stems[k]) for f, k in (
+            (drum_chain, "drums"), (bass_chain, "bass"), (other_chain, "other"))]
         v, d, b, o = (j.result() for j in jobs)
 
     if vocal_present:

@@ -153,3 +153,6 @@ def test_vocal_moves_back_off_when_the_vocal_is_already_forward():
     forward, _ = engineer.decide(engineer.Settings(mode="2track"), x, None, vocal_median_db=16.0)
     assert buried.vocal_presence_db > 0 and buried.duck_other_db > 0 and "vocal_lift_db" in why
     assert forward.vocal_presence_db == 0 and forward.duck_other_db == 0 and forward.vocal_lift_db == 0
+    assert buried.ride_target_db == 6.5 and forward.ride_target_db == 0  # no ride on an already-forward vocal
+    explicit, _ = engineer.decide(engineer.Settings(mode="2track", ride_target_db=8), x, None, vocal_median_db=16.0)
+    assert explicit.ride_target_db == 8  # an override always wins

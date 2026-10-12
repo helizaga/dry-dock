@@ -46,6 +46,7 @@ The listener runs `drydock review <slug>` (or says it in chat; record it with `d
 | The listener says | Try |
 |---|---|
 | vocal too loud / too quiet | `--set vocal_lift_db=-1` / `--set ride_target_db=8` |
+| beat feels small under the vocal (QA "vocal balance" warns) | `--set vocal_lift_db=-3`; the ride is already off for forward vocals |
 | vocal harsh / sibilant | `--set vocal_presence_db=1 --set deess_max_db=7` |
 | keys or snare disappear under the vocal | `--set duck_other_db=1.5 --set duck_drums_db=0` |
 | 808 thin on big speakers | `--set octave_up=false` or `--set sub_trim_db=0` |

@@ -19,7 +19,7 @@ class Settings:
     vocal_lift_db: float | None = None
     vocal_presence_db: float | None = None  # bell at 3 kHz on the vocal stem
     deess_max_db: float = 5.0
-    ride_target_db: float = 6.5  # vocal over everything else in 1-4 kHz while singing
+    ride_target_db: float | None = None  # vocal over everything else in 1-4 kHz while singing; 0 turns the ride off
     ride_max_db: float = 4.5
     duck_other_db: float | None = None  # make room: melodic stem dips in the vocal's bins while it sings
     duck_drums_db: float | None = None
@@ -94,6 +94,8 @@ def decide(s: Settings, source: np.ndarray, stems: dict[str, np.ndarray] | None,
         level = "buried" if v < 6 else "in the beat" if v < 10 else "already forward"
         auto = {"vocal_presence_db": 3.0 if v < 6 else 1.5 if v < 10 else 0.0,
                 "vocal_lift_db": 0.5 if v < 8 else 0.0,
+                # an already-forward vocal's quieter lines are its dynamics, not burial: riding them up flattens it
+                "ride_target_db": 6.5 if v < 10 else 0.0,
                 "duck_other_db": 3.0 if v < 10 else 0.0,
                 "duck_drums_db": 1.5 if v < 10 else 0.0}
         for k, val in auto.items():
@@ -103,6 +105,8 @@ def decide(s: Settings, source: np.ndarray, stems: dict[str, np.ndarray] | None,
     for k in ("vocal_presence_db", "vocal_lift_db", "duck_other_db", "duck_drums_db"):
         if getattr(s, k) is None:
             setattr(s, k, 0.0)
+    if s.ride_target_db is None:
+        s.ride_target_db = 6.5
     if s.hat_cut_db is None:
         excess = t["6-9k"] - t["presence 1.5-4k"] + 3.0
         s.hat_cut_db = round(float(np.clip(excess, 0.0, 2.5)), 1)

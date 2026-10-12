@@ -10,6 +10,10 @@ import numpy as np
 from drydock import deliver, dsp, measure
 
 LOSSY = {"mp3", "aac", "vorbis", "opus", "mp2", "wmav2"}
+# Vocal over the beat (1-4 kHz, median while singing) measured on released rap/R&B masters with the same method:
+# about 0 dB (Lil Bean "yeah bop") to +7 dB (Drake "Janice STFU"). Past +12 the vocal is far in front of the beat.
+REFERENCE_VOCAL_RANGE = "about 0 to +7 dB"
+VOCAL_FORWARD_DB = 12.0
 
 
 def _check(name: str, ok: bool, detail: str, *, fail: bool = False) -> dict[str, str]:
@@ -59,6 +63,11 @@ def report(*, source, master, meta, analysis, spans, stems, processed, settings,
         vocal = {"before": before, "after": after, "median_before": round(float(np.median(list(before.values()))), 1),
                  "median_after": round(float(np.median(list(after.values()))), 1), "weak_bars_before": weak_b,
                  "weak_bars_after": weak_a}
+        forward = vocal["median_after"]
+        checks.append(_check("vocal balance", forward <= VOCAL_FORWARD_DB,
+                             f"vocal sits {forward:+.1f} dB over the beat in 1-4 kHz (released references measured "
+                             f"{REFERENCE_VOCAL_RANGE}); " + ("in range" if forward <= VOCAL_FORWARD_DB else
+                             f"very forward: the beat may feel small under it; A/B --set vocal_lift_db={(settings.vocal_lift_db or 0) - 3:g}")))
         checks.append(_check("vocal audibility", len(weak_a) <= 2,
                              f"bars under +4 dB while singing: {len(weak_b)} -> {len(weak_a)}"
                              + (f" ({', '.join(map(str, weak_a))})" if weak_a else "")))

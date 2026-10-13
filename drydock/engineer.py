@@ -37,6 +37,7 @@ class Settings:
     separation: str = "best"  # "best" (glass-harbor's vocal ensemble: slower, cleaner) or "balanced"
     lead_split: bool = True  # treat the lead and the backing/ad-libs separately
     note_fix: bool = True  # re-pitch held notes 25-60 cents off (in key only)
+    breath_cut_db: float = 0.0  # turn breaths between words down this much (0 = keep them; 12-15 is typical)
     production: str = "clean"  # "clean": fixes only; "produced": + hook doubles, plate reverb, delay throws
     backing_width: float = 0.4
     backing_db: float = 0.0
@@ -85,6 +86,8 @@ class Settings:
         for name in ("backing_width", "reverb_mix", "throw_mix"):
             if not 0 <= getattr(self, name) <= 1:
                 raise ValueError(f"{name} must be between 0 and 1")
+        if not 0 <= self.breath_cut_db <= 60:
+            raise ValueError("breath_cut_db must be between 0 and 60")
         for name in ("ride_max_db", "deess_max_db", "drum_clip_db", "hat_cut_db", "kick_duck_db", "duck_other_db",
                      "duck_drums_db"):
             value = getattr(self, name)
@@ -106,6 +109,7 @@ _TAG_LABELS = {
     "lead_split": lambda v: None if v else "no lead split",
     "octave_up": lambda v: "808 octave" if v else "no 808 octave",
     "backing_db": lambda v: f"ad-libs {v:+g} dB",
+    "breath_cut_db": lambda v: f"breaths -{v:g} dB" if v else None,
 }
 
 

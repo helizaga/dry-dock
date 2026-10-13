@@ -101,6 +101,77 @@ def line_ends(lyrics: dict[str, Any], min_gap_s: float = 0.0, max_s: float = 0.8
     return out
 
 
+# ---------------------------------------------------------------- breaths
+
+# Calibrated on a separated lead (reverb and beat bleed included) against spectrogram-checked breaths: breaths are
+# noise-like at 1-5 kHz, flat at 150-1500 Hz, and their strongest spectral peaks stand at most ~14 dB over the
+# surrounding spectrum (breaths 11-14 dB; held-note and backing tails 17-22 dB; sung words 15 dB and up).
+BREATH_HI_FLATNESS = 0.18
+BREATH_LOW_FLATNESS = 0.14
+BREATH_MAX_PEAK_DB = 14.5
+
+
+def find_breaths(v: np.ndarray, words: list[tuple[float, float]], *, min_s: float = 0.12, max_s: float = 0.9,
+                 hop: int = 441) -> list[tuple[float, float]]:
+    """Breaths: gaps between words (>= 40 ms from any word) that sit 6-40 dB under the singing level, last
+    min_s-max_s, and are noise-like rather than pitched."""
+    import librosa
+
+    m = v.mean(axis=1).astype(np.float32)
+    p = np.abs(librosa.stft(m, n_fft=4096, hop_length=hop)) ** 2 + 1e-12
+    f = librosa.fft_frequencies(sr=dsp.SR, n_fft=4096)
+
+    def flatness(lo: float, hi: float) -> np.ndarray:
+        band = (f >= lo) & (f <= hi)
+        return np.exp(np.mean(np.log(p[band]), 0)) / np.mean(p[band], 0)
+
+    from scipy.ndimage import median_filter
+
+    hi_flat, lo_flat = flatness(1000, 5000), flatness(150, 1500)
+    band_db = 10 * np.log10(p[(f >= 150) & (f <= 2000)])
+    # how far the 5 strongest peaks stand over a ~320 Hz median of the spectrum: harmonics of a note poke out
+    peaks = np.sort(band_db - median_filter(band_db, size=(31, 1)), axis=0)[-5:].mean(axis=0)
+    level = 10 * np.log10(np.mean(p, 0))
+    t = np.arange(p.shape[1]) * hop / dsp.SR
+    ref = np.percentile(level[level > level.max() - 40], 90)
+    gap = (level > ref - 40) & (level < ref - 6)
+    for a, b in words:
+        gap[(t >= a - 0.04) & (t <= b + 0.04)] = False
+    spans, i = [], 0
+    while i < t.size:
+        if not gap[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < t.size and (gap[j + 1] or (j + 2 < t.size and gap[j + 2])):  # bridge one-frame dips
+            j += 1
+        dur = (j - i + 1) * hop / dsp.SR
+        if (min_s <= dur <= max_s and np.median(hi_flat[i:j + 1]) >= BREATH_HI_FLATNESS
+                and np.median(lo_flat[i:j + 1]) >= BREATH_LOW_FLATNESS
+                and np.median(peaks[i:j + 1]) <= BREATH_MAX_PEAK_DB):
+            spans.append((round(float(t[i]), 3), round(float(t[j]), 3)))
+        i = j + 1
+    return spans
+
+
+def reduce_breaths(v: np.ndarray, spans: list[tuple[float, float]], depth_db: float, fade_s: float = 0.03) -> np.ndarray:
+    """Turn each breath down by depth_db with short fades inside the span (the words around it are untouched)."""
+    if not spans or depth_db <= 0:
+        return v
+    g = np.ones(v.shape[0])
+    floor = float(dsp.gain(-depth_db))
+    f = max(1, int(fade_s * dsp.SR))
+    for s0, s1 in spans:
+        a, b = int(s0 * dsp.SR), min(v.shape[0], int(s1 * dsp.SR))
+        if b - a < 2 * f:
+            continue
+        seg = np.full(b - a, floor)
+        seg[:f] = np.linspace(1, floor, f)
+        seg[-f:] = np.linspace(floor, 1, f)
+        g[a:b] = np.minimum(g[a:b], seg)
+    return v * g[:, None]
+
+
 # ---------------------------------------------------------------- pitch
 
 

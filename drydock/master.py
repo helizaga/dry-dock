@@ -125,15 +125,24 @@ def vocal_prep(vocals: np.ndarray, slug: str, tag: str, analysis: dict, grid, se
         lead = vocal.fix_notes(lead, notes)
     hooks: list[tuple[float, float]] = []
     throws: list[tuple[float, float]] = []
-    if settings.production == "produced":
+    breaths: list[tuple[float, float]] = []
+    if settings.production == "produced" or settings.breath_cut_db:
         lyrics = vocal.transcribe(lead, slug, tag, log)
-        hooks, throws = vocal.hook_spans(lyrics), vocal.line_ends(lyrics, min_gap_s=grid.period)
+        if settings.production == "produced":
+            hooks, throws = vocal.hook_spans(lyrics), vocal.line_ends(lyrics, min_gap_s=grid.period)
+        if settings.breath_cut_db:
+            words = [(w["start"], w["end"]) for s in lyrics["segments"] for w in s["words"]]
+            breaths = vocal.find_breaths(lead, words)
+            log(f"turning {len(breaths)} breath(s) down {settings.breath_cut_db:g} dB")
+            lead = vocal.reduce_breaths(lead, breaths, settings.breath_cut_db)
     info = {"lead_split": True, "backing_level_vs_lead_db": round(dsp.active_rms_db(backing) - dsp.active_rms_db(lead), 1),
             "notes_fixed": [{"time_s": n["t0"], "bar": round(grid.bar_at_time(n["t0"]), 1), "cents": n["cents"],
                              "seconds": round(n["t1"] - n["t0"], 2)} for n in notes],
             "production": settings.production,
             "hook_lines": [{"bar": round(grid.bar_at_time(a), 1), "seconds": round(b - a, 1)} for a, b in hooks],
-            "throws": len(throws)}
+            "throws": len(throws),
+            "breaths": {"cut_db": settings.breath_cut_db, "count": len(breaths),
+                        "times_s": [round(a, 2) for a, _ in breaths]}}
     return {"lead": lead, "backing": backing, "hooks": hooks, "throws": throws, "beat_s": grid.period}, info
 
 

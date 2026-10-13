@@ -68,7 +68,8 @@ Each run writes `runs/<slug>/<stamp>/`:
   vocal in the stems) skips the vocal moves.
 - **Vocal production** (stems mode): the lead and the backing/ad-libs are split and treated apart (backing thinner,
   wider, steadier); held notes 25-60 cents off are re-pitched one by one (in key only, formants kept, everything
-  else untouched). `--set production=produced` adds detuned doubles on the repeated lyric lines (hooks, from local
+  else untouched). `--set breath_cut_db=15` turns breaths between words down (found from Whisper's word timings
+  and checked to be noise, not a note or a tail). `--set production=produced` adds detuned doubles on the repeated lyric lines (hooks, from local
   Whisper), a light plate reverb, and dotted-eighth delay throws on line endings.
 - **Drums**: hat/ess hump cut when 6-9 kHz runs hot, transient soft clip.
 - **808**: when the bass line sits below 45 Hz (phones stop there), an octave-up copy, a trimmed fundamental, a

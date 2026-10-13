@@ -59,6 +59,8 @@ The listener runs `drydock review <slug>` (or says it in chat; record it with `d
 | too much reverb / echo | `--set reverb_mix=0.04 --set throw_mix=0.15` |
 | ad-libs too loud / too wide | `--set backing_db=-3` / `--set backing_width=0.2` |
 | a re-pitched note sounds processed | `--set note_fix=false` (and fix it in the session) |
+| breathing is distracting | `--set breath_cut_db=15` (QA lists each breath it turned down) |
+| a word start/end or a tail sounds cut after the breath pass | `--set breath_cut_db=8`, or 0 to keep breaths |
 | needs to be louder | `--set target_lufs=-9` (QA will warn about limiter load; say so) |
 | drop does not hit | check the sections table; `--set section_rides=true` is the default |
 

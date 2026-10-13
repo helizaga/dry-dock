@@ -73,3 +73,19 @@ def test_treat_backing_widens_and_keeps_level_setting():
     out = vocal.treat_backing(b, width=0.4, level_db=-3.0)
     assert np.mean((out[:, 0] - out[:, 1]) ** 2) > 0
     assert dsp.active_rms_db(out) < dsp.active_rms_db(b)
+
+
+def test_breaths_are_found_between_words_and_turned_down():
+    rng = np.random.default_rng(3)
+    word = lambda s: _sine(220, s, 0.3) + _sine(440, s, 0.15) + _sine(660, s, 0.08)
+    breath = np.stack([dsp.bandpass(rng.standard_normal(int(0.4 * SR)), 300, 9000) * 0.02] * 2, axis=1)
+    silence = np.zeros((int(0.2 * SR), 2))
+    v = np.concatenate([word(1.0), silence, breath, silence, word(1.0), silence, word(1.0)])
+    words = [(0.0, 1.0), (1.8, 2.8), (3.0, 4.0)]
+    spans = vocal.find_breaths(v, words)
+    assert len(spans) == 1 and 1.1 <= spans[0][0] <= 1.3 and 1.5 <= spans[0][1] <= 1.7  # the noise (+- window), not the gaps
+    out = vocal.reduce_breaths(v, spans, 15.0)
+    mid = slice(int(1.35 * SR), int(1.5 * SR))
+    assert 10 * np.log10(np.mean(out[mid] ** 2) / np.mean(v[mid] ** 2)) == pytest.approx(-15, abs=0.5)
+    assert np.array_equal(out[: SR], v[: SR]) and np.array_equal(out[int(1.8 * SR):], v[int(1.8 * SR):])
+    assert vocal.reduce_breaths(v, spans, 0) is v

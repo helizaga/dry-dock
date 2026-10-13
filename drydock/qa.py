@@ -108,6 +108,11 @@ def report(*, source, master, meta, analysis, spans, stems, processed, settings,
             ears.append(f"Re-pitched note at {int(n['time_s'] // 60)}:{n['time_s'] % 60:04.1f} (bar {n['bar']}, "
                         f"{n['cents']:+.0f} cents): natural, or a pitch-shift artifact?")
         ears.append(f"Backing/ad-libs sit {vp['backing_level_vs_lead_db']:+.1f} dB vs the lead, wider: do they still read?")
+        br = vp.get("breaths") or {}
+        if br.get("count"):
+            first = ", ".join(f"{int(s // 60)}:{s % 60:04.1f}" for s in br["times_s"][:4])
+            ears.append(f"{br['count']} breath(s) turned down {br['cut_db']:g} dB (e.g. {first}): any word start or end "
+                        "clipped, or a reverb tail that now stops short?")
         if vp["production"] == "produced":
             ears.append(f"Hook doubles on {len(vp['hook_lines'])} line(s) and delay throws on {vp['throws']} line ending(s): "
                         "too much, too little?")
@@ -169,6 +174,8 @@ def markdown(r: dict[str, Any], title: str) -> str:
                   f"- Notes re-pitched: {len(vp['notes_fixed'])}"
                   + "".join(f"\n  - {int(n['time_s'] // 60)}:{n['time_s'] % 60:04.1f} bar {n['bar']}: {n['cents']:+.0f} cents, "
                             f"{n['seconds']} s" for n in vp["notes_fixed"]),
+                  (f"- Breaths turned down {vp['breaths']['cut_db']:g} dB: {vp['breaths']['count']}"
+                   if (vp.get("breaths") or {}).get("count") else "- Breaths: kept"),
                   f"- Production: {vp['production']}"
                   + (f" (hook doubles on {len(vp['hook_lines'])} line(s), delay throws on {vp['throws']} line ending(s), "
                      "plate reverb)" if vp["production"] == "produced" else " (no added doubles or effects)")]

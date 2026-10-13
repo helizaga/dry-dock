@@ -132,3 +132,12 @@ def test_reference_match_ignores_a_level_offset():
     ref = {b: (0.0 if b == 1000 else 4.0) for b in bands}  # the 1 kHz anchor alone differs: a level offset, not tone
     curve = reference.match_curve(own, ref, cutoff_hz=16000)
     assert max(abs(v) for b, v in curve.items() if b not in (800, 1000, 1250)) < 0.5
+
+
+def test_reference_display_name():
+    from pathlib import Path
+
+    from drydock import reference
+
+    assert reference.display_name(Path("/lib/yeah-bop/audio.flac")) == "yeah-bop"
+    assert reference.display_name(Path("/music/Drake - Passionfruit.wav")) == "Drake - Passionfruit"

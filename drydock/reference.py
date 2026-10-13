@@ -27,6 +27,14 @@ class _Windows:
         return (bar - 1) * self.size
 
 
+GENERIC_NAMES = {"audio", "mix", "master", "track", "song", "final", "bounce", "output"}
+
+
+def display_name(path: Path) -> str:
+    """The reference's name for labels: the file name, or its folder's when the file name says nothing."""
+    return path.parent.name if path.stem.lower() in GENERIC_NAMES else path.stem
+
+
 def analyze(path: Path, log: Log) -> dict[str, Any]:
     """Cached per file hash under work/_references/."""
     from drydock import stems
@@ -36,11 +44,12 @@ def analyze(path: Path, log: Log) -> dict[str, Any]:
     if (cache / "reference.json").exists():
         info = json.loads((cache / "reference.json").read_text())
         info["curve"] = {int(k): v for k, v in info["curve"].items()}  # JSON keys come back as text
+        info["file"] = display_name(path)
         return info
     cache.mkdir(parents=True, exist_ok=True)
     log(f"measuring the reference {path.name}")
     x = stems.decode(path)
-    info: dict[str, Any] = {"file": path.name, "lufs": round(dsp.lufs(x), 2), "curve": measure.third_octaves(x),
+    info: dict[str, Any] = {"file": display_name(path), "lufs": round(dsp.lufs(x), 2), "curve": measure.third_octaves(x),
                             "stereo": measure.stereo(x), "tone": measure.tone(x), "vocal_median_db": None}
     vocals = _reference_vocals(x, cache, log)
     if vocals is not None:

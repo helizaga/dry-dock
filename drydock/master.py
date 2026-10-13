@@ -199,8 +199,10 @@ def run(src: Path | None, slug: str, settings: engineer.Settings, log: Log = pri
     started = time.time()
     settings.validate()
     tag = engineer.variant_tag(settings) if tag is None else tag  # before the auto values are filled in
-    if reference is not None and not tag.endswith(f"ref {reference.stem}"):
-        tag = ", ".join(t for t in (tag, f"ref {reference.stem}") if t)
+    if reference is not None:
+        from drydock.reference import display_name
+
+        tag = ", ".join(t for t in (tag, f"ref {display_name(reference)}") if t)
     lift_auto = settings.vocal_lift_db is None
     presence_auto = settings.bus_presence_db is None
     user_stems = None

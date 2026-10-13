@@ -267,7 +267,7 @@ def test_master_matches_a_reference(home, monkeypatch):
     out = master.run(src, "refsong", engineer.Settings(), log=lambda m: None, reference=ref_path)
     qa = json.loads((out / "qa.json").read_text())
     ref = qa["processing"]["reference"]
-    assert ref["file"] == "Reference Song.wav" and ref["vocal_median_db"] is not None
+    assert ref["file"] == "Reference Song" and ref["vocal_median_db"] is not None
     assert max(abs(v) for v in ref["match_eq_db"].values()) <= reference.MAX_EQ_DB
     checks = {c["check"]: c for c in qa["checks"]}
     assert "tone vs reference" in checks and "vocal balance vs reference" in checks

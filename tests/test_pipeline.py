@@ -251,3 +251,36 @@ def test_vocal_production_clean_and_produced(home, monkeypatch):
 
     assert review.timeline("synth", out.name)["title"] == "song (produced)"
     assert {c["check"]: c["status"] for c in produced["checks"]}["true peak"] == "pass"
+
+
+def test_master_matches_a_reference(home, monkeypatch):
+    from drydock import reference
+
+    mix, st = _song(seed=5)
+    ref_path = home / "Reference Song.wav"
+    brighter = reference.apply_curve(mix, {b: (3.0 if b >= 2000 else 0.0) for b in (25, 1000, 2000, 4000, 8000, 16000)})
+    sf.write(ref_path, np.clip(brighter * 0.8, -1, 1), SR, subtype="PCM_24")
+    monkeypatch.setattr(reference, "_reference_vocals", lambda x, cache, log: x * 0.3)  # no separation in tests
+    monkeypatch.setattr(stems, "separate", lambda x, slug, log, **k: {n: v[: x.shape[0]] * 0.9 for n, v in st.items()})
+    src = home / "song.wav"
+    sf.write(src, np.clip(mix * 0.9, -1, 1), SR, subtype="PCM_24")
+    out = master.run(src, "refsong", engineer.Settings(), log=lambda m: None, reference=ref_path)
+    qa = json.loads((out / "qa.json").read_text())
+    ref = qa["processing"]["reference"]
+    assert ref["file"] == "Reference Song.wav" and ref["vocal_median_db"] is not None
+    assert max(abs(v) for v in ref["match_eq_db"].values()) <= reference.MAX_EQ_DB
+    checks = {c["check"]: c for c in qa["checks"]}
+    assert "tone vs reference" in checks and "vocal balance vs reference" in checks
+    assert "ref Reference Song" in qa["variant"] and "## Reference" in (out / "qa.md").read_text()
+
+
+def test_rerun_from_cache_when_the_file_is_gone(home, monkeypatch):
+    from drydock import cli
+
+    out, first = _run(home, monkeypatch, "2track")
+    (home / "song.wav").unlink()  # the chat attachment got cleared
+    again = master.run(None, "synth", engineer.Settings(mode="2track"), log=lambda m: None)
+    second = json.loads((again / "qa.json").read_text())
+    assert second["source"]["sha256"] == first["source"]["sha256"]
+    assert second["master"]["lufs"] == first["master"]["lufs"]
+    assert cli.main(["master", "--slug", "nothing-here"]) == 2

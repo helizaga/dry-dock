@@ -19,6 +19,9 @@ result in plain terms, and turn listening notes into `--set` overrides.
 .venv/bin/drydock master --stems "<folder>" --slug <name>     # session stems: check the role each file got
 ```
 With `--stems`, read the `file -> role` lines in the output; fix a wrong guess with `--role "File.wav=bass"`.
+Ask the listener for a reference (a released song in the same lane they want to sound like) and pass
+`--reference`: tone and vocal balance then come from that song instead of generic rules. Re-runs only need
+`--slug`; the decoded source is cached, so a cleared chat attachment does not block a revision.
 Stems are cached in `work/<slug>/`; re-runs with new `--set` values take about a minute.
 Use `--mode 2track` when the user hears separation artifacts (watery vocal edges, swirly hats).
 For a release, render `production=clean` and `production=produced` and let the listener pick in the review page:

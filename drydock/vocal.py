@@ -188,36 +188,59 @@ def _key_pitch_classes(key_name: str | None) -> set[int] | None:
     return {(tonic + s) % 12 for s in steps}
 
 
+def pitch_track(x: np.ndarray, hop_s: float = 0.01) -> np.ndarray:
+    """F0 in Hz every ``hop_s`` (0 = unvoiced). FCPE, a neural tracker built for singing (about as accurate as
+    RMVPE, which scores ~97% raw pitch accuracy where pYIN scores ~75% on MIR-1K, and ~10x faster than pYIN here);
+    pYIN when torchfcpe is missing."""
+    import librosa
+
+    y = librosa.resample(x.mean(axis=1).astype(np.float32), orig_sr=dsp.SR, target_sr=16000)
+    n = max(1, int(len(y) / 16000 / hop_s))
+    try:
+        import torch
+        from torchfcpe import spawn_bundled_infer_model
+    except ImportError:
+        f0, voiced, prob = librosa.pyin(y, fmin=70, fmax=1000, sr=16000, frame_length=1024, hop_length=int(16000 * hop_s))
+        return np.where(voiced & (prob >= 0.5), np.nan_to_num(f0), 0.0)[:n]
+    import contextlib
+    import io
+
+    with contextlib.redirect_stdout(io.StringIO()):  # the model prints its device on load
+        model = spawn_bundled_infer_model(device="cpu")
+    f0 = model.infer(torch.from_numpy(y)[None, :, None], sr=16000, decoder_mode="local_argmax", threshold=0.006,
+                     f0_min=70, f0_max=1000, interp_uv=False, output_interp_target_length=n)
+    return f0.squeeze().numpy().astype(np.float64)
+
+
+def held_notes(x: np.ndarray, hop_s: float = 0.01) -> list[dict[str, Any]]:
+    """Steady notes (>= 150 ms within +-40 cents of their own median)."""
+    f0 = pitch_track(x, hop_s)
+    midi = np.where(f0 > 0, 69 + 12 * np.log2(np.maximum(f0, 1e-6) / 440.0), np.nan)
+    notes, i, n = [], 0, len(midi)
+    while i < n:
+        if not np.isfinite(midi[i]):
+            i += 1
+            continue
+        j = i
+        while j + 1 < n and np.isfinite(midi[j + 1]) and abs(midi[j + 1] - np.nanmedian(midi[i:j + 1])) < 0.4:
+            j += 1
+        if (j - i + 1) * hop_s >= 0.15:
+            seg = midi[i:j + 1]
+            core = seg[len(seg) // 5: len(seg) - len(seg) // 5] if len(seg) > 10 else seg
+            notes.append({"t0": round(i * hop_s, 3), "t1": round((j + 1) * hop_s, 3), "midi": round(float(np.median(core)), 3)})
+        i = j + 1
+    return notes
+
+
 def off_notes(lead: np.ndarray, slug: str, tag: str, key_name: str | None, *, min_cents: float = 25.0,
               max_cents: float = 60.0, min_s: float = 0.25) -> list[dict[str, Any]]:
     """Held notes (>= min_s) that land min_cents-max_cents from the nearest semitone, when that semitone is in the
     song's key. Out-of-key targets and bigger misses are left alone (likely slides, blue notes, or tracking errors)."""
-    path = _cache(slug, tag) / "held-notes.json"
+    path = _cache(slug, tag) / "held-notes-fcpe.json"
     if path.exists():
         notes = json.loads(path.read_text())
     else:
-        import librosa
-
-        y = librosa.resample(lead.mean(axis=1), orig_sr=dsp.SR, target_sr=22050)
-        hop = 256
-        dt = hop / 22050
-        f0, voiced, prob = librosa.pyin(y, fmin=70, fmax=1000, sr=22050, frame_length=2048, hop_length=hop)
-        midi = librosa.hz_to_midi(f0)
-        notes, i, n = [], 0, len(midi)
-        while i < n:
-            if not voiced[i] or not np.isfinite(midi[i]) or prob[i] < 0.5:
-                i += 1
-                continue
-            j = i
-            while (j + 1 < n and voiced[j + 1] and np.isfinite(midi[j + 1])
-                   and abs(midi[j + 1] - np.median(midi[i:j + 1])) < 0.4):
-                j += 1
-            if (j - i + 1) * dt >= 0.15:
-                seg = midi[i:j + 1]
-                core = seg[len(seg) // 5: len(seg) - len(seg) // 5] if len(seg) > 10 else seg
-                m = float(np.median(core))
-                notes.append({"t0": round(i * dt, 3), "t1": round((j + 1) * dt, 3), "midi": round(m, 3)})
-            i = j + 1
+        notes = held_notes(lead)
         path.write_text(json.dumps(notes))
     scale = _key_pitch_classes(key_name)
     out = []

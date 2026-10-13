@@ -89,3 +89,46 @@ def test_breaths_are_found_between_words_and_turned_down():
     assert 10 * np.log10(np.mean(out[mid] ** 2) / np.mean(v[mid] ** 2)) == pytest.approx(-15, abs=0.5)
     assert np.array_equal(out[: SR], v[: SR]) and np.array_equal(out[int(1.8 * SR):], v[int(1.8 * SR):])
     assert vocal.reduce_breaths(v, spans, 0) is v
+
+
+def test_held_notes_find_a_sung_note_and_its_detune():
+    x = np.concatenate([np.zeros((SR // 2, 2)), _sine(440 * 2 ** (30 / 1200), 1.0), np.zeros((SR // 2, 2))])
+    notes = vocal.held_notes(x)
+    assert len(notes) == 1
+    n = notes[0]
+    assert 0.45 <= n["t0"] <= 0.6 and 1.4 <= n["t1"] <= 1.55
+    assert (n["midi"] - 69) * 100 == pytest.approx(30, abs=6)
+
+
+
+def test_reference_match_curve_is_bounded_and_honest():
+    from drydock import reference
+
+    own = {b: 0.0 for b in (25, 31, 40, 1000, 2000, 2520, 3175, 16000)}
+    ref = {**own, 2520: 8.0, 25: 6.0, 16000: 6.0, 1000: 0.0}
+    curve = reference.match_curve(own, ref, cutoff_hz=15000)
+    assert max(abs(v) for v in curve.values()) <= reference.MAX_EQ_DB
+    assert curve[2520] > 1.0  # moves toward the reference
+    assert curve[25] <= 0 and curve[16000] <= 0  # no sub boost, nothing raised above the source's content
+
+
+def test_reference_eq_moves_tone_toward_target():
+    from drydock import measure, reference
+
+    rng = np.random.default_rng(2)
+    x = rng.standard_normal((20 * SR, 2)) * 0.05
+    target = reference.apply_curve(x, {b: (3.0 if 1500 <= b <= 4000 else 0.0) for b in measure.third_octaves(x)})
+    own, ref = measure.third_octaves(x, loud_only=False), measure.third_octaves(target, loud_only=False)
+    matched = reference.apply_curve(x, reference.match_curve(own, ref, cutoff_hz=20000))
+    assert reference.tone_distance_db(measure.third_octaves(matched, loud_only=False), ref) < \
+        reference.tone_distance_db(own, ref) / 2
+
+
+def test_reference_match_ignores_a_level_offset():
+    from drydock import reference
+
+    bands = [25, 50, 100, 200, 400, 800, 1000, 1250, 2000, 4000, 8000, 12699]
+    own = {b: 0.0 for b in bands}
+    ref = {b: (0.0 if b == 1000 else 4.0) for b in bands}  # the 1 kHz anchor alone differs: a level offset, not tone
+    curve = reference.match_curve(own, ref, cutoff_hz=16000)
+    assert max(abs(v) for b, v in curve.items() if b not in (800, 1000, 1250)) < 0.5

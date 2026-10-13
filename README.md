@@ -29,8 +29,15 @@ the stem models (a few GB) into `~/.cache/glass-harbor/models`.
 .venv/bin/drydock master --stems "path/to/Stems Folder"       # session stems: no separation, best quality
 .venv/bin/drydock master "path/to/bounce.wav" --mode 2track   # stereo file only (no separation artifacts)
 .venv/bin/drydock master song.wav --set ride_target_db=7 --set width=0
+.venv/bin/drydock master song.wav --reference "a released track.flac"   # match its tone and vocal balance
+.venv/bin/drydock master --slug <slug> --set ...              # re-run from the cache (the original file can be gone)
 .venv/bin/drydock settings                                    # every knob and its default
 ```
+
+`--reference` measures a track you want to sound like: its tonal balance is matched with a smooth EQ (at most
+3 dB per band, shape only, no boosts above the source's content or below 30 Hz), and the vocal level moves toward
+its vocal-over-beat balance, but never so far that more than two extra bars of singing get buried. Loudness still
+follows the limiter budget. The reference's vocal is separated once and cached.
 
 With `--stems`, each file gets a role from its name (`808.wav` -> bass, `Adlibs.wav` -> vocals, `Hats.wav` ->
 drums, anything else -> other); files sharing a role are summed. Fix a guess with `--role "Keys 2.wav=vocals"`.
@@ -68,7 +75,7 @@ Each run writes `runs/<slug>/<stamp>/`:
   vocal in the stems) skips the vocal moves.
 - **Vocal production** (stems mode): the lead and the backing/ad-libs are split and treated apart (backing thinner,
   wider, steadier); held notes 25-60 cents off are re-pitched one by one (in key only, formants kept, everything
-  else untouched). `--set breath_cut_db=15` turns breaths between words down (found from Whisper's word timings
+  else untouched; pitch from FCPE, a neural tracker for singing, with pYIN as the fallback). `--set breath_cut_db=15` turns breaths between words down (found from Whisper's word timings
   and checked to be noise, not a note or a tail). `--set production=produced` adds detuned doubles on the repeated lyric lines (hooks, from local
   Whisper), a light plate reverb, and dotted-eighth delay throws on line endings.
 - **Drums**: hat/ess hump cut when 6-9 kHz runs hot, transient soft clip.

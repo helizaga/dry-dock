@@ -58,6 +58,20 @@ def clear_work(work: Path) -> None:
         shutil.rmtree(p) if p.is_dir() else p.unlink()
 
 
+def load_cached(slug: str) -> tuple[np.ndarray, dict[str, Any], dict[str, np.ndarray] | None]:
+    """The song as decoded on an earlier run (the original file may be gone: chat attachments get cleared).
+    Returns (source, meta, session stems or None)."""
+    work = paths.work_dir(slug)
+    if not ((work / "source.wav").exists() and (work / "source.json").exists()):
+        raise FileNotFoundError(f"nothing cached for {slug}; run drydock master with the file once")
+    meta = json.loads((work / "source.json").read_text())
+    source = sf.read(work / "source.wav", dtype="float64", always_2d=True)[0]
+    user = None
+    if meta.get("user_stems"):
+        user = {r: sf.read(work / "stems" / f"{r}.wav", dtype="float64", always_2d=True)[0] for r in ROLES}
+    return source, meta, user
+
+
 def load_source(src: Path, slug: str, log: Log) -> tuple[np.ndarray, dict[str, Any]]:
     work = paths.work_dir(slug)
     work.mkdir(parents=True, exist_ok=True)

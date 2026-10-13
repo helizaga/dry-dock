@@ -64,14 +64,29 @@ def report(*, source, master, meta, analysis, spans, stems, processed, settings,
                  "median_after": round(float(np.median(list(after.values()))), 1), "weak_bars_before": weak_b,
                  "weak_bars_after": weak_a}
         forward = vocal["median_after"]
-        checks.append(_check("vocal balance", forward <= VOCAL_FORWARD_DB,
-                             f"vocal sits {forward:+.1f} dB over the beat in 1-4 kHz (released references measured "
-                             f"{REFERENCE_VOCAL_RANGE}); " + ("in range" if forward <= VOCAL_FORWARD_DB else
-                             f"very forward: the beat may feel small under it; A/B --set vocal_lift_db={(settings.vocal_lift_db or 0) - 3:g}")))
+        ref_vocal = (info.get("reference") or {}).get("vocal_median_db")
+        if ref_vocal is not None:
+            checks.append(_check("vocal balance vs reference", abs(forward - ref_vocal) <= 3.0,
+                                 f"vocal sits {forward:+.1f} dB over the beat; the reference {ref_vocal:+.1f} dB"))
+        else:
+            advice = ("in range" if forward <= VOCAL_FORWARD_DB else "very forward: the beat may feel small under it; "
+                      f"A/B --set vocal_lift_db={(settings.vocal_lift_db or 0) - 3:g}")
+            checks.append(_check("vocal balance", forward <= VOCAL_FORWARD_DB,
+                                 f"vocal sits {forward:+.1f} dB over the beat in 1-4 kHz (released references measured "
+                                 f"{REFERENCE_VOCAL_RANGE}); {advice}"))
         checks.append(_check("vocal audibility", len(weak_a) <= 2,
                              f"bars under +4 dB while singing: {len(weak_b)} -> {len(weak_a)}"
                              + (f" ({', '.join(map(str, weak_a))})" if weak_a else "")))
 
+    ref = info.get("reference")
+    if ref:
+        from drydock.reference import tone_distance_db
+
+        curve = {int(k): v for k, v in ref["curve"].items()}
+        ref["tone_distance_db"]["master"] = tone_distance_db(measure.third_octaves(written), curve)
+        d = ref["tone_distance_db"]
+        checks.append(_check("tone vs reference", d["master"] <= 2.5 or d["master"] <= d["source"] - 1.0,
+                             f"1/3-octave distance to {ref['file']}: source {d['source']} dB -> master {d['master']} dB"))
     notes = []
     if meta.get("user_stems"):
         by_role: dict[str, int] = {}
@@ -167,6 +182,16 @@ def markdown(r: dict[str, Any], title: str) -> str:
     lines += [f"| {n} | {a} | {b} | {d:+.1f} |" for n, a, b, d in zip(sec["names"], sec["source_lufs"], sec["master_lufs"], sec["balance_shift_lu"])]
     lines += ["", "## Decisions", ""]
     lines += [f"- `{k}` = {r['decisions']['settings'][k]}: {why}" for k, why in r["decisions"]["why"].items()]
+    ref = r["processing"].get("reference")
+    if ref:
+        moved = [f"{b} Hz {g:+.1f}" for b, g in ref["match_eq_db"].items() if abs(g) >= 0.5]
+        lines += ["", "## Reference", "",
+                  f"- `{ref['file']}`: {ref['lufs']} LUFS"
+                  + (f", vocal {ref['vocal_median_db']:+.1f} dB over its beat" if ref["vocal_median_db"] is not None else ""),
+                  f"- Tone distance (1/3 octave, 40 Hz-12 kHz): source {ref['tone_distance_db']['source']} dB -> "
+                  f"master {ref['tone_distance_db'].get('master')} dB",
+                  "- Match EQ (bounded to 3 dB, no boosts above the source's content or below 30 Hz): "
+                  + (", ".join(moved) if moved else "under 0.5 dB everywhere")]
     vp = r["processing"].get("vocal_production")
     if vp:
         lines += ["", "## Vocal production", "",

@@ -18,6 +18,7 @@ dependencies = [
   "soxr>=0.3",
   "pyloudnorm>=0.1.1",
   "matplotlib>=3.8",
+  "torchfcpe>=0.0.4",  # neural pitch tracking for note fixes (MIT, model bundled)
 ]
 
 [project.optional-dependencies]

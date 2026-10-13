@@ -23,6 +23,8 @@ def main(argv: list[str] | None = None) -> int:
     m.add_argument("--mode", choices=["stems", "2track"], default="stems",
                    help="stems: fix each element (default); 2track: stereo file only, no separation artifacts")
     m.add_argument("--tag", help="label for this version in file names and the video (default: built from --set)")
+    m.add_argument("--reference", type=Path, metavar="FILE",
+                   help="a released track to match: tonal balance and how far the vocal sits over the beat")
     m.add_argument("--set", dest="overrides", action="append", default=[], metavar="NAME=VALUE",
                    help="override a setting (see `drydock settings`); repeatable")
     sub.add_parser("settings", help="list every setting and its default ('None' = decided from the song)")
@@ -59,12 +61,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "settings":
         print(json.dumps(engineer.Settings().to_dict(), indent=1))
         return 0
-    if (args.audio is None) == (args.stems is None):
-        print("drydock: give a bounce or --stems FOLDER (one of them)", file=sys.stderr)
+    if args.audio is not None and args.stems is not None:
+        print("drydock: give a bounce or --stems FOLDER, not both", file=sys.stderr)
         return 2
     src = args.stems or args.audio
-    if not src.exists() or (args.stems is not None and not src.is_dir()):
-        print(f"drydock: no such {'folder' if args.stems else 'file'}: {src}", file=sys.stderr)
+    if src is None and not args.slug:
+        print("drydock: give a bounce, --stems FOLDER, or --slug to re-run a song from its cache", file=sys.stderr)
+        return 2
+    if src is not None and (not src.exists() or (args.stems is not None and not src.is_dir())):
+        hint = f" (re-run from the cache with: drydock master --slug {args.slug})" if args.slug else ""
+        print(f"drydock: no such {'folder' if args.stems else 'file'}: {src}{hint}", file=sys.stderr)
         return 2
     slug = args.slug or paths.slugify(src.stem if src.is_file() else src.name)
     from drydock.master import run
@@ -74,8 +80,10 @@ def main(argv: list[str] | None = None) -> int:
         if len(roles) != len(args.roles):
             raise ValueError("--role takes FILE=ROLE, for example --role 'Keys 2.wav=other'")
         settings = engineer.Settings(mode=args.mode).override(args.overrides).validate()
-        out = run(src, slug, settings, roles=roles, tag=args.tag)
-    except ValueError as exc:
+        if args.reference is not None and not args.reference.is_file():
+            raise ValueError(f"no such reference file: {args.reference}")
+        out = run(src, slug, settings, roles=roles, tag=args.tag, reference=args.reference)
+    except (ValueError, FileNotFoundError) as exc:
         print(f"drydock: {exc}", file=sys.stderr)
         return 2
     print(out)

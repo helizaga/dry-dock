@@ -113,6 +113,40 @@ def section_rides(source: np.ndarray, master: np.ndarray, spans: list[tuple[int,
                  "cut_db": [round(c, 2) for c in cuts], "after_lufs": measure.section_loudness(out[:n], spans)}
 
 
+REF_LIFT_MAX_CUT_DB = 6.0  # a reference may pull the vocal down at most this much
+REF_EXTRA_WEAK_BARS = 2  # ...and may not leave more than this many extra bars where the vocal is buried
+
+
+def _toward_reference_vocal(stems, source, settings, prep, residual, grid, before, target, why, log):
+    """Steer the vocal level toward the reference's balance after processing (ducking, presence, and compression
+    move it too), without burying it: stop cutting once more than REF_EXTRA_WEAK_BARS extra bars fall under +4 dB."""
+    weak_before = sum(1 for v in before.values() if v < 4)
+
+    def measure_after(processed):
+        rest = processed["drums"] + processed["bass"] + processed["other"] + residual
+        got = {b: v for b, v in measure.vocal_audibility(processed["vocals"], rest, grid).items() if b in before}
+        return float(np.median(list(got.values()))) if got else None, sum(1 for v in got.values() if v < 4)
+
+    processed, stem_info = engineer.process_stems(stems, source, settings, prep)
+    median, weak = measure_after(processed)
+    if median is not None and abs(target - median) > 1.0:
+        settings.vocal_lift_db = round(float(np.clip(settings.vocal_lift_db + target - median,
+                                                     -REF_LIFT_MAX_CUT_DB, 4.0)), 1)
+        why["vocal_lift_db"] += f"; corrected after processing landed at {median:+.1f} dB"
+        processed, stem_info = engineer.process_stems(stems, source, settings, prep)
+        median, weak = measure_after(processed)
+    for _ in range(3):  # back off if matching the reference buries lines
+        if weak <= weak_before + REF_EXTRA_WEAK_BARS or settings.vocal_lift_db >= 0:
+            break
+        settings.vocal_lift_db = round(min(0.0, settings.vocal_lift_db + 1.5), 1)
+        processed, stem_info = engineer.process_stems(stems, source, settings, prep)
+        median, weak = measure_after(processed)
+        why["vocal_lift_db"] += f"; backed off to {settings.vocal_lift_db:+.1f} dB so lines stay audible"
+    log(f"vocal lift {settings.vocal_lift_db:+.1f} dB toward the reference (lands at {median:+.1f} dB, "
+        f"{weak} buried bar(s) vs {weak_before} in the source)")
+    return processed, stem_info
+
+
 def vocal_prep(vocals: np.ndarray, slug: str, tag: str, analysis: dict, grid, settings: engineer.Settings,
                log: Log) -> tuple[dict[str, Any], dict[str, Any]]:
     """Lead/backing split, note fixes, and (for "produced") the hook and line-end spans from the lyrics."""
@@ -154,9 +188,10 @@ def beat_mask(frames: int, spans: list[tuple[int, int, str]], loudness: list[flo
     return mask
 
 
-def run(src: Path, slug: str, settings: engineer.Settings, log: Log = print, *,
-        roles: dict[str, str] | None = None, tag: str | None = None) -> Path:
-    """Master ``src``: a bounce (separated into stems) or a folder of session stems (used as they are)."""
+def run(src: Path | None, slug: str, settings: engineer.Settings, log: Log = print, *,
+        roles: dict[str, str] | None = None, tag: str | None = None, reference: Path | None = None) -> Path:
+    """Master ``src``: a bounce (separated into stems), a folder of session stems (used as they are), or None to
+    re-run the song cached under ``slug``."""
     from glass_harbor.grid import Grid
 
     from drydock import deliver, qa
@@ -164,8 +199,15 @@ def run(src: Path, slug: str, settings: engineer.Settings, log: Log = print, *,
     started = time.time()
     settings.validate()
     tag = engineer.variant_tag(settings) if tag is None else tag  # before the auto values are filled in
+    if reference is not None and not tag.endswith(f"ref {reference.stem}"):
+        tag = ", ".join(t for t in (tag, f"ref {reference.stem}") if t)
+    lift_auto = settings.vocal_lift_db is None
+    presence_auto = settings.bus_presence_db is None
     user_stems = None
-    if src.is_dir():
+    if src is None:
+        log(f"re-running {slug} from its cache")
+        source, meta, user_stems = stem_io.load_cached(slug)
+    elif src.is_dir():
         log(f"reading stems from {src.name}")
         source, meta, user_stems = stem_io.load_user_stems(src, slug, log, roles)
     else:
@@ -190,6 +232,17 @@ def run(src: Path, slug: str, settings: engineer.Settings, log: Log = print, *,
     vocal_before = measure.vocal_audibility(stems["vocals"], source - stems["vocals"], grid) if has_vocal else {}
     vocal_median = float(np.median(list(vocal_before.values()))) if vocal_before else None
     settings, why = engineer.decide(settings, source, stems, vocal_median)
+    from drydock import reference as ref_mod
+
+    ref = ref_mod.analyze(reference, log) if reference is not None else None
+    if ref is not None:
+        if presence_auto:
+            settings.bus_presence_db = 0.0
+            why["bus_presence_db"] = "the reference match sets the tonal balance"
+        if lift_auto and vocal_median is not None and ref["vocal_median_db"] is not None:
+            settings.vocal_lift_db = round(float(np.clip(ref["vocal_median_db"] - vocal_median, -REF_LIFT_MAX_CUT_DB, 4.0)), 1)
+            why["vocal_lift_db"] = (f"the reference's vocal sits {ref['vocal_median_db']:+.1f} dB over its beat; "
+                                    f"this one {vocal_median:+.1f} dB")
     for k, v in why.items():
         log(f"  {k} = {getattr(settings, k)}: {v}")
     info: dict[str, Any] = {}
@@ -203,7 +256,11 @@ def run(src: Path, slug: str, settings: engineer.Settings, log: Log = print, *,
                                                         "session" if user_stems is not None else settings.separation,
                                                         analysis, grid, settings, log)
         log("fixing stems")
-        processed, info["stems"] = engineer.process_stems(stems, source, settings, prep)
+        if ref is not None and lift_auto and ref["vocal_median_db"] is not None and has_vocal:
+            processed, info["stems"] = _toward_reference_vocal(stems, source, settings, prep, residual, grid,
+                                                              vocal_before, ref["vocal_median_db"], why, log)
+        else:
+            processed, info["stems"] = engineer.process_stems(stems, source, settings, prep)
         bus, info["bus"] = engineer.bus_from_stems(processed, residual, settings)
     else:
         processed = None
@@ -211,6 +268,17 @@ def run(src: Path, slug: str, settings: engineer.Settings, log: Log = print, *,
         bus, info["bus"] = engineer.two_track(source, settings)
 
     from drydock.deliver import aac_true_peak
+
+    if ref is not None:
+        own = measure.third_octaves(bus)
+        eq_curve = ref_mod.match_curve(own, ref["curve"], cutoff_hz=measure.content_cutoff_hz(source))
+        bus = ref_mod.apply_curve(bus, eq_curve)
+        moved = {b: g for b, g in eq_curve.items() if abs(g) >= 0.5}
+        info["reference"] = {"file": ref["file"], "lufs": ref["lufs"], "vocal_median_db": ref["vocal_median_db"],
+                             "curve": ref["curve"], "match_eq_db": eq_curve,
+                             "tone_distance_db": {"source": ref_mod.tone_distance_db(measure.third_octaves(source), ref["curve"]),
+                                                  "before_match": ref_mod.tone_distance_db(own, ref["curve"])}}
+        log(f"matching tone to {ref['file']}: " + ", ".join(f"{b} Hz {g:+.1f}" for b, g in list(moved.items())[:8]))
 
     stage = FinalStage(bus)
 

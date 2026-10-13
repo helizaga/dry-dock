@@ -75,7 +75,8 @@ def timeline(slug: str, name: str) -> dict[str, Any]:
         lanes.append({"id": f"bars {s['start_bar']}-{s['start_bar'] + s['bars'] - 1}", "track": s.get("energy", ""),
                       "stem": "", "start": round(start, 3), "end": round(min(end, duration), 3)})
     qa = json.loads((run / "qa.json").read_text())
-    title = Path(qa["source"]["file"]).stem + (" (original)" if name == ORIGINAL else "")
+    variant = "original" if name == ORIGINAL else qa.get("variant") or "master"
+    title = f"{Path(qa['source']['file']).stem} ({variant})"
     key = qa["song"].get("key") or ""
     return {"duration": duration, "bars": bars, "clips": lanes, "title": title,
             "tempo": f"{qa['song']['bpm']:.0f} BPM {key}".strip()}

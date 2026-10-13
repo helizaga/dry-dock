@@ -82,6 +82,8 @@ def _run(home, monkeypatch, mode, vocal=True):
 def test_pipeline_writes_everything_and_passes_hard_checks(home, mode, monkeypatch):
     out, qa = _run(home, monkeypatch, mode)
     names = qa["files"]
+    tag = {"stems": "", "2track": "2-track"}[mode]  # defaults get no tag; 2-track mode is labelled
+    assert qa["variant"] == tag and names["mp4"] == ("song - master.mp4" if not tag else f"song - master - {tag}.mp4")
     for key in ("wav", "flac", "mp3", "m4a", "mp4", "compare_source", "compare_master"):
         assert (out / names[key]).exists() or (out / "compare-at-14-lufs" / names[key]).exists(), key
     status = {c["check"]: c["status"] for c in qa["checks"]}
@@ -243,4 +245,9 @@ def test_vocal_production_clean_and_produced(home, monkeypatch):
     vp = produced["processing"]["vocal_production"]
     assert vp["production"] == "produced" and len(vp["hook_lines"]) == 3 and vp["throws"] == 3
     assert "## Vocal production" in (out / "qa.md").read_text()
+    assert produced["variant"] == "produced"
+    assert produced["files"]["mp4"] == "song - master - produced.mp4" and (out / "song - master - produced.mp4").exists()
+    from drydock import review
+
+    assert review.timeline("synth", out.name)["title"] == "song (produced)"
     assert {c["check"]: c["status"] for c in produced["checks"]}["true peak"] == "pass"

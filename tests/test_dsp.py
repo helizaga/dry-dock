@@ -156,3 +156,11 @@ def test_vocal_moves_back_off_when_the_vocal_is_already_forward():
     assert buried.ride_target_db == 6.5 and forward.ride_target_db == 0  # no ride on an already-forward vocal
     explicit, _ = engineer.decide(engineer.Settings(mode="2track", ride_target_db=8), x, None, vocal_median_db=16.0)
     assert explicit.ride_target_db == 8  # an override always wins
+
+
+def test_variant_tag_names_what_changed():
+    S = engineer.Settings
+    assert engineer.variant_tag(S()) == ""
+    assert engineer.variant_tag(S(vocal_lift_db=-3, production="produced")) == "produced, vocal -3 dB"
+    assert engineer.variant_tag(S(mode="2track", ride_target_db=0, reverb_mix=0.04)) == "2-track, no ride, reverb_mix=0.04"
+    assert engineer.variant_tag(S(note_fix=True)) == ""  # setting a default explicitly is not a variant

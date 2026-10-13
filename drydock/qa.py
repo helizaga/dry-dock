@@ -143,7 +143,7 @@ def add_file_checks(r: dict[str, Any], files: dict[str, Any]) -> dict[str, Any]:
 def markdown(r: dict[str, Any], title: str) -> str:
     s, m = r["source"], r["master"]
     sec = r["sections"]
-    lines = [f"# {title}: master report", "",
+    lines = [f"# {title}: master report" + (f" ({r['variant']})" if r.get("variant") else ""), "",
              f"{r['song']['bpm']} BPM, {r['song']['key']}, {r['song']['bars']} bars. Source: `{s['file']}` "
              + (f"({len(s['stems'])} session stems)." if s.get("user_stems") else f"({s.get('codec')}, {s.get('sample_rate')} Hz).")
              , "",

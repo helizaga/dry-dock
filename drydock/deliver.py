@@ -93,15 +93,23 @@ def video(wav: Path, dst: Path, title: str, subtitle: str = "", volume_db: float
     return dst
 
 
+def safe_name(text: str) -> str:
+    """File-name safe on macOS, Windows, and phones: no slashes, colons, or other reserved characters."""
+    import re as _re
+
+    return _re.sub(r'[\\/:*?"<>|]+', "-", text).strip(" .")[:80]
+
+
 def at_lufs(x: np.ndarray, target: float = -14.0) -> np.ndarray:
     return np.clip(x * dsp.gain(target - dsp.lufs(x)), -1.0, 1.0 - 2 ** -23)
 
 
 def write_all(out: Path, title: str, source: np.ndarray, master: np.ndarray, *,
-              encode_overshoot_db: float = 0.0) -> dict[str, str]:
+              encode_overshoot_db: float = 0.0, tag: str = "") -> dict[str, str]:
     """``encode_overshoot_db``: how far an AAC transcode of this master peaks above it (measured by the master
     stage); the share files start turned down by enough to land at -1 dBTP in one encode."""
-    base = f"{title} - master"
+    label = f"master - {safe_name(tag)}" if tag else "master"
+    base = f"{title} - {label}"
     files: dict[str, Path] = {}
     files["wav"] = out / f"{base}.wav"
     sf.write(files["wav"], np.clip(master, -1.0, 1.0 - 2 ** -23), dsp.SR, subtype="PCM_24")
@@ -120,7 +128,7 @@ def write_all(out: Path, title: str, source: np.ndarray, master: np.ndarray, *,
             "m4a": pool.submit(peak_safe, lambda v: _encode(wav, m4a, ["-af", f"volume={v}dB", "-c:a", aac, "-b:a", "256k",
                                                                        "-movflags", "+faststart"]), m4a, start_db=start),
             # same AAC encoder and bitrate as the m4a, so the same predicted trim applies
-            "mp4": pool.submit(peak_safe, lambda v: video(wav, mp4, title, "master", v), mp4, start_db=start),
+            "mp4": pool.submit(peak_safe, lambda v: video(wav, mp4, title, f"master · {tag}" if tag else "master", v), mp4, start_db=start),
         }
         for key, job in jobs.items():
             files[key], trims[key] = job.result()

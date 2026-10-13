@@ -93,6 +93,38 @@ class Settings:
         return self
 
 
+# Short labels for settings a listener changes; anything else is shown as name=value.
+_TAG_LABELS = {
+    "production": lambda v: "produced" if v == "produced" else None,
+    "mode": lambda v: "2-track" if v == "2track" else None,
+    "separation": lambda v: "fast stems" if v == "balanced" else None,
+    "vocal_lift_db": lambda v: f"vocal {v:+g} dB",
+    "ride_target_db": lambda v: "no ride" if not v else f"ride {v:g}",
+    "target_lufs": lambda v: f"{v:g} LUFS",
+    "width": lambda v: "no width" if not v else f"width {v:g}",
+    "note_fix": lambda v: None if v else "no note fix",
+    "lead_split": lambda v: None if v else "no lead split",
+    "octave_up": lambda v: "808 octave" if v else "no 808 octave",
+    "backing_db": lambda v: f"ad-libs {v:+g} dB",
+}
+
+
+def variant_tag(s: Settings) -> str:
+    """A short label for what this run changed from the defaults ('' when nothing): it goes into the file names
+    and the video's title card, so two versions of a song can be told apart on a phone."""
+    default = Settings()
+    parts = []
+    first = ("mode", "production", "separation")  # the big switches lead the label
+    for f in sorted(fields(s), key=lambda f: (f.name not in first, first.index(f.name) if f.name in first else 0)):
+        value, base = getattr(s, f.name), getattr(default, f.name)
+        if value == base:
+            continue
+        label = _TAG_LABELS.get(f.name, lambda v, n=f.name: f"{n}={v}")(value)
+        if label:
+            parts.append(label)
+    return ", ".join(parts)
+
+
 def has_vocal(vocal: np.ndarray, source: np.ndarray) -> bool:
     """A lead vocal is present when the vocal stem's active level is within 25 dB of the song's (not just bleed)."""
     return dsp.active_rms_db(vocal) > dsp.active_rms_db(source) - 25

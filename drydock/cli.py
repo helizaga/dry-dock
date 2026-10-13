@@ -22,6 +22,7 @@ def main(argv: list[str] | None = None) -> int:
     m.add_argument("--slug", help="name for work/ and runs/ (default: from the file name)")
     m.add_argument("--mode", choices=["stems", "2track"], default="stems",
                    help="stems: fix each element (default); 2track: stereo file only, no separation artifacts")
+    m.add_argument("--tag", help="label for this version in file names and the video (default: built from --set)")
     m.add_argument("--set", dest="overrides", action="append", default=[], metavar="NAME=VALUE",
                    help="override a setting (see `drydock settings`); repeatable")
     sub.add_parser("settings", help="list every setting and its default ('None' = decided from the song)")
@@ -73,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
         if len(roles) != len(args.roles):
             raise ValueError("--role takes FILE=ROLE, for example --role 'Keys 2.wav=other'")
         settings = engineer.Settings(mode=args.mode).override(args.overrides).validate()
-        out = run(src, slug, settings, roles=roles)
+        out = run(src, slug, settings, roles=roles, tag=args.tag)
     except ValueError as exc:
         print(f"drydock: {exc}", file=sys.stderr)
         return 2

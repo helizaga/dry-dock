@@ -146,7 +146,7 @@ def beat_mask(frames: int, spans: list[tuple[int, int, str]], loudness: list[flo
 
 
 def run(src: Path, slug: str, settings: engineer.Settings, log: Log = print, *,
-        roles: dict[str, str] | None = None) -> Path:
+        roles: dict[str, str] | None = None, tag: str | None = None) -> Path:
     """Master ``src``: a bounce (separated into stems) or a folder of session stems (used as they are)."""
     from glass_harbor.grid import Grid
 
@@ -154,6 +154,7 @@ def run(src: Path, slug: str, settings: engineer.Settings, log: Log = print, *,
 
     started = time.time()
     settings.validate()
+    tag = engineer.variant_tag(settings) if tag is None else tag  # before the auto values are filled in
     user_stems = None
     if src.is_dir():
         log(f"reading stems from {src.name}")
@@ -241,13 +242,14 @@ def run(src: Path, slug: str, settings: engineer.Settings, log: Log = print, *,
 
     log("writing deliverables and running QA")
     with ThreadPoolExecutor(max_workers=1) as pool:  # encodes run in ffmpeg processes while QA measures in memory
-        pending = pool.submit(deliver.write_all, out, title, source, master, encode_overshoot_db=overshoot)
+        pending = pool.submit(deliver.write_all, out, title, source, master, encode_overshoot_db=overshoot, tag=tag)
         report = qa.report(source=source, master=master, meta=meta, analysis=analysis, spans=spans, stems=stems,
                            processed=processed, settings=settings, why=why, info=info, grid=grid,
                            vocal_before=vocal_before)
         qa.chart(out / "before-after.png", source, master, spans, report)
         files = pending.result()
     report = qa.add_file_checks(report, files)
+    report["variant"] = tag
     (out / "qa.json").write_text(json.dumps(report, indent=1, default=float))
     (out / "qa.md").write_text(qa.markdown(report, title))
     (out / "settings.json").write_text(json.dumps(settings.to_dict(), indent=1))

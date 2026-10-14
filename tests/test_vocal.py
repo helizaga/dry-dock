@@ -141,3 +141,10 @@ def test_reference_display_name():
 
     assert reference.display_name(Path("/lib/yeah-bop/audio.flac")) == "yeah-bop"
     assert reference.display_name(Path("/music/Drake - Passionfruit.wav")) == "Drake - Passionfruit"
+
+
+def test_pitch_tracking_handles_stems_over_full_scale(capsys):
+    loud = _sine(440, 1.0, amp=1.4)  # separated stems can peak over 1.0
+    f0 = vocal.pitch_track(loud)
+    assert "error" not in capsys.readouterr().out
+    assert np.median(f0[f0 > 0]) == pytest.approx(440, rel=0.01)

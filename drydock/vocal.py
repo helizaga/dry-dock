@@ -195,6 +195,9 @@ def pitch_track(x: np.ndarray, hop_s: float = 0.01) -> np.ndarray:
     import librosa
 
     y = librosa.resample(x.mean(axis=1).astype(np.float32), orig_sr=dsp.SR, target_sr=16000)
+    peak = float(np.max(np.abs(y))) if y.size else 0.0
+    if peak > 0.99:  # separated stems can peak over full scale; FCPE wants [-1, 1] and pitch ignores level
+        y = (y * (0.99 / peak)).astype(np.float32)
     n = max(1, int(len(y) / 16000 / hop_s))
     try:
         import torch
